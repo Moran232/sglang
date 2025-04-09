@@ -663,6 +663,7 @@ def get_dataset(args, tokenizer):
             dataset_path=args.dataset_path,
             random_sample=args.dataset_name == "random",
             return_text=not tokenize_prompt,
+            fix_input_output=args.fix_input_output
         )
     elif args.dataset_name == "random-image":
         assert not tokenize_prompt, "random-image does not support --tokenize-prompt"
@@ -785,6 +786,42 @@ def download_and_cache_file(url: str, filename: Optional[str] = None):
 
     return filename
 
+def sample_HLE_requeset(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    fixed_output_len: Optional[int] = None,
+    context_len: Optional[int] = None,
+    prompt_suffix: Optional[str] = "",
+    apply_chat_template=False,
+):
+    from datasets import load_dataset
+    dataset = load_dataset("cais/hle", split="test")
+    filtered_dataset = []
+    for data in dataset:
+        if len(filtered_dataset) == num_requests:
+            break
+
+        question = data.get('question')
+        answer = data.get('answer')
+
+        if len(question) < 1000 or len(answer) < 100:
+            continue
+
+        prompt_token_ids = tokenizer.encode(question)
+        completion_token_ids = tokenizer.encode(answer)
+        prompt_len = len(prompt_token_ids)
+
+        output_len = (
+            len(completion_token_ids) if fixed_output_len is None else fixed_output_len
+        )
+
+        print(prompt_len, output_len, context_len)
+        filtered_dataset.append((question, prompt_len, output_len))
+
+    print(f"#Input tokens: {np.sum([x[1] for x in filtered_dataset])}")
+    print(f"#Output tokens: {np.sum([x[2] for x in filtered_dataset])}")
+    return filtered_dataset
 
 def is_file_valid_json(path):
     if not os.path.isfile(path):
@@ -980,8 +1017,10 @@ def sample_sharegpt_requests(
     random.shuffle(dataset)
 
     # Filter out sequences that are too long or too short
-    filtered_dataset: List[DatasetRow] = []
-    for i in range(len(dataset)):
+
+    filtered_dataset: List[Tuple[str, int, int]] = []
+    print(f"#Total size of sharegpt {len(dataset)}")
+    for i in tqdm(range(len(dataset)), desc="sampling data"):
         if len(filtered_dataset) == num_requests:
             break
 
@@ -1018,9 +1057,15 @@ def sample_sharegpt_requests(
             # Prune too long sequences.
             continue
 
-        filtered_dataset.append(
-            DatasetRow(prompt=prompt, prompt_len=prompt_len, output_len=output_len)
-        )
+            
+        # tmp modify: to get 1k 1k data.
+        if prompt_len < 1000 or prompt_len > 1048:
+            continue 
+        if output_len < 800 or output_len > 1048:
+            print(output_len)
+            continue
+        print(prompt_len, output_len, context_len)
+        filtered_dataset.append((prompt, prompt_len, output_len))
 
     print(f"#Input tokens: {np.sum([x.prompt_len for x in filtered_dataset])}")
     print(f"#Output tokens: {np.sum([x.output_len for x in filtered_dataset])}")
@@ -1036,19 +1081,25 @@ def sample_random_requests(
     dataset_path: str,
     random_sample: bool = True,
     return_text: bool = True,
-) -> List[DatasetRow]:
-    input_lens = np.random.randint(
-        max(int(input_len * range_ratio), 1),
-        input_len + 1,
-        size=num_prompts,
-    )
-    output_lens = np.random.randint(
-        int(output_len * range_ratio),
-        output_len + 1,
-        size=num_prompts,
-    )
+    fix_input_output:bool=False
+) -> List[Tuple[str, int, int]]:
+    if fix_input_output:
+        input_lens=np.full(num_prompts, input_len)
+        output_lens=np.full(num_prompts, output_len)
+    else:
+        input_lens = np.random.randint(
+            max(int(input_len * range_ratio), 1),
+            input_len + 1,
+            size=num_prompts,
+        )
+        output_lens = np.random.randint(
+            int(output_len * range_ratio),
+            output_len + 1,
+            size=num_prompts,
+        )
 
-    if random_sample:
+    print(f"#Sampled input_lens={input_lens} output_lens={output_lens}")
+    if True:
         # Sample token ids from ShareGPT and repeat/truncate them to satisfy the input_lens
 
         # Download sharegpt if necessary
@@ -1127,6 +1178,7 @@ def sample_random_requests(
 
     print(f"#Input tokens: {np.sum(input_lens)}")
     print(f"#Output tokens: {np.sum(output_lens)}")
+    # print(f"#input requests: {input_requests}")
     return input_requests
 
 
@@ -2043,6 +2095,11 @@ if __name__ == "__main__":
             "Resolution of random images for random-image dataset. "
             "Supports presets 4k/1080p/720p/360p or custom 'heightxwidth' (e.g., 1080x1920)."
         ),
+    )
+    parser.add_argument(
+        "--fix-input-output",
+        action="store_true",
+        help="fix input len and output lens with random dataset.",
     )
     parser.add_argument(
         "--request-rate",
