@@ -511,7 +511,7 @@ def get_dataset(args, tokenizer):
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
             dataset_path=args.dataset_path,
-            random_sample=args.dataset_name == "random",
+            fix_input_output=args.fix_input_output
         )
     elif args.dataset_name == "generated-shared-prefix":
         input_requests = sample_generated_shared_prefix_requests(
@@ -854,19 +854,25 @@ def sample_random_requests(
     dataset_path: str,
     random_sample: bool = True,
     return_text: bool = True,
-) -> List[DatasetRow]:
-    input_lens = np.random.randint(
-        max(int(input_len * range_ratio), 1),
-        input_len + 1,
-        size=num_prompts,
-    )
-    output_lens = np.random.randint(
-        int(output_len * range_ratio),
-        output_len + 1,
-        size=num_prompts,
-    )
+    fix_input_output:bool=False
+) -> List[Tuple[str, int, int]]:
+    if fix_input_output:
+        input_lens=np.full(num_prompts, input_len)
+        output_lens=np.full(num_prompts, output_len)
+    else:
+        input_lens = np.random.randint(
+            max(int(input_len * range_ratio), 1),
+            input_len + 1,
+            size=num_prompts,
+        )
+        output_lens = np.random.randint(
+            int(output_len * range_ratio),
+            output_len + 1,
+            size=num_prompts,
+        )
 
-    if random_sample:
+    print(f"#Sampled input_lens={input_lens} output_lens={output_lens}")
+    if True:
         # Sample token ids from ShareGPT and repeat/truncate them to satisfy the input_lens
 
         # Download sharegpt if necessary
@@ -945,6 +951,7 @@ def sample_random_requests(
 
     print(f"#Input tokens: {np.sum(input_lens)}")
     print(f"#Output tokens: {np.sum(output_lens)}")
+    # print(f"#input requests: {input_requests}")
     return input_requests
 
 
@@ -1719,6 +1726,11 @@ if __name__ == "__main__":
         default=0.0,
         help="Range of sampled ratio of input/output length, "
         "used only for random dataset.",
+    )
+    parser.add_argument(
+        "--fix-input-output",
+        action="store_true",
+        help="fix input len and output lens with random dataset.",
     )
     parser.add_argument(
         "--request-rate",
