@@ -637,7 +637,8 @@ def sample_sharegpt_requests(
 
     # Filter out sequences that are too long or too short
     filtered_dataset: List[Tuple[str, int, int]] = []
-    for i in range(len(dataset)):
+    print(f"#Total size of sharegpt {len(dataset)}")
+    for i in tqdm(range(len(dataset)), desc="sampling data"):
         if len(filtered_dataset) == num_requests:
             break
 
@@ -673,7 +674,14 @@ def sample_sharegpt_requests(
         if context_len and prompt_len + output_len > context_len:
             # Prune too long sequences.
             continue
-
+            
+        # tmp modify: to get 1k 1k data.
+        if prompt_len < 1000 or prompt_len > 1048:
+            continue 
+        if output_len < 800 or output_len > 1048:
+            print(output_len)
+            continue
+        print(prompt_len, output_len, context_len)
         filtered_dataset.append((prompt, prompt_len, output_len))
 
     print(f"#Input tokens: {np.sum([x[1] for x in filtered_dataset])}")
