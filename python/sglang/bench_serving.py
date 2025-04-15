@@ -596,6 +596,42 @@ def download_and_cache_file(url: str, filename: Optional[str] = None):
 
     return filename
 
+def sample_HLE_requeset(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    fixed_output_len: Optional[int] = None,
+    context_len: Optional[int] = None,
+    prompt_suffix: Optional[str] = "",
+    apply_chat_template=False,
+):
+    from datasets import load_dataset
+    dataset = load_dataset("cais/hle", split="test")
+    filtered_dataset = []
+    for data in dataset:
+        if len(filtered_dataset) == num_requests:
+            break
+
+        question = data.get('question')
+        answer = data.get('answer')
+
+        if len(question) < 1000 or len(answer) < 100:
+            continue
+
+        prompt_token_ids = tokenizer.encode(question)
+        completion_token_ids = tokenizer.encode(answer)
+        prompt_len = len(prompt_token_ids)
+
+        output_len = (
+            len(completion_token_ids) if fixed_output_len is None else fixed_output_len
+        )
+
+        print(prompt_len, output_len, context_len)
+        filtered_dataset.append((question, prompt_len, output_len))
+
+    print(f"#Input tokens: {np.sum([x[1] for x in filtered_dataset])}")
+    print(f"#Output tokens: {np.sum([x[2] for x in filtered_dataset])}")
+    return filtered_dataset
 
 def sample_sharegpt_requests(
     dataset_path: str,
