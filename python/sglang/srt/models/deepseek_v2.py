@@ -1627,7 +1627,6 @@ class DeepseekV2ForCausalLM(nn.Module):
                 )
             else:
                 raise ValueError("num_nextn_predict_layers is not in the config")
-
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
             ("gate_up_proj", "gate_proj", 0),
@@ -1645,7 +1644,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                     "up_proj.weight",
                     "up_proj.weight_scale",
                 ]
-            else:
+            elif self.quant_config is not None and self.quant_config.get_name() =="fp8":
                 suffix_list = [
                     "down_proj.weight",
                     "down_proj.weight_scale_inv",
@@ -1653,6 +1652,18 @@ class DeepseekV2ForCausalLM(nn.Module):
                     "gate_proj.weight_scale_inv",
                     "up_proj.weight",
                     "up_proj.weight_scale_inv",
+                ]
+            elif self.quant_config is not None and self.quant_config.get_name() in("awq", "awq_marlin", "moe_wna16"):
+                suffix_list = [
+                        "down_proj.qweight",
+                        "down_proj.qzeros",
+                        "down_proj.scales",
+                        "gate_proj.qweight",
+                        "gate_proj.qzeros",
+                        "gate_proj.scales",
+                        "up_proj.qweight",
+                        "up_proj.qzeros",
+                        "up_proj.scales",
                 ]
             names_to_remove = []
 
@@ -1806,10 +1817,11 @@ class DeepseekV2ForCausalLM(nn.Module):
                             q_a_proj_name in cached_a_proj
                             and kv_a_proj_name in cached_a_proj
                         ):
+
                             q_a_proj_weight = cached_a_proj[q_a_proj_name]
                             kv_a_proj_weight = cached_a_proj[kv_a_proj_name]
                             fused_weight = torch.cat(
-                                [q_a_proj_weight, kv_a_proj_weight], dim=0
+                                [q_a_proj_weight, kv_a_proj_weight], dim=1
                             )
 
                             param_name = name.replace(
