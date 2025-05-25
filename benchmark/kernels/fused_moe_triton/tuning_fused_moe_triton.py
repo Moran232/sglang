@@ -47,6 +47,7 @@ def benchmark_config(
     use_fp8_w8a8: bool,
     use_int8_w8a8: bool,
     use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
     block_shape: List[int] = None,
     num_iters: int = 100,
 ) -> float:
@@ -73,6 +74,41 @@ def benchmark_config(
             ),
             dtype=torch.int8,
         )
+    elif use_int4_w4a16:
+        bit8_pack_factor=2
+        group_size=64
+        w1 = torch.randint(
+                1,
+                30,
+                (
+                    num_experts,
+                    2 * shard_intermediate_size,
+                    hidden_size // bit8_pack_factor,
+                ),
+                dtype=torch.uint8,
+            )
+        w2 = torch.randint(
+                1,
+                30,
+                (
+                    num_experts,
+                    hidden_size,
+                    shard_intermediate_size // bit8_pack_factor,
+                ),
+                dtype=torch.uint8,
+            )
+        w1_qzeros = torch.zeros(
+                        num_experts,
+                        2 * shard_intermediate_size // bit8_pack_factor,
+                        hidden_size // group_size,
+                        dtype=torch.uint8,
+                    )
+        w2_qzeros = torch.zeros(
+                        num_experts,
+                        hidden_size // bit8_pack_factor,
+                        shard_intermediate_size // group_size,
+                        dtype=torch.uint8,
+                    )
     else:
         w1 = torch.randn(
             num_experts, shard_intermediate_size, hidden_size, dtype=init_dtype
@@ -91,6 +127,20 @@ def benchmark_config(
             (num_experts, 2 * shard_intermediate_size), dtype=torch.float32
         )
         w2_scale = torch.randn((hidden_size, num_experts), dtype=torch.float32)
+    if use_int4_w4a16:
+        params_dtype = torch.bfloat16
+        w1_scale = torch.zeros(
+                num_experts,
+                2 * shard_intermediate_size,
+                hidden_size // group_size,
+                dtype=params_dtype,
+            )
+        w2_scale = torch.zeros(
+                num_experts,
+                hidden_size,
+                shard_intermediate_size // group_size,
+                dtype=params_dtype,
+            )
     if use_fp8_w8a8 or use_int8_w8a8:
         if use_int8_w8a8 and block_shape is None:
             w1_scale = torch.randn(
@@ -220,12 +270,18 @@ def get_configs_compute_bound() -> List[Dict[str, int]]:
     if _is_hip:
         configs = get_rocm_configs_compute_bound()
     else:
-        for num_stages in [2, 3, 4, 5]:
+        # for num_stages in [2, 3, 4, 5]:
+        for num_stages in [1,2, 3, 4, 5,6]:
             for block_m in [16, 32, 64, 128, 256]:
-                for block_k in [64, 128, 256]:
-                    for block_n in [32, 64, 128, 256]:
-                        for num_warps in [4, 8]:
-                            for group_size in [1, 16, 32, 64]:
+            # for block_m in [1, 2, 4, 8, 16]: # for w4a16 test
+                # for block_k in [64, 128, 256]:
+                for block_k in [32, 64, 128, 256]:
+                    # for block_n in [32, 64, 128, 256]:
+                    for block_n in [16, 32, 64, 128, 256]:
+                        # for num_warps in [4, 8]:
+                        for num_warps in [1, 2, 4, 8]:
+                            # for group_size in [1, 16, 32, 64]:
+                            for group_size in [1, 2, 4, 8, 16]:
                                 configs.append(
                                     {
                                         "BLOCK_SIZE_M": block_m,
@@ -261,11 +317,12 @@ class BenchmarkWorker:
         use_fp8_w8a8: bool,
         use_int8_w8a8: bool,
         use_int8_w8a16: bool,
+        use_int4_w4a16: bool,
         block_shape: List[int],
     ) -> Tuple[Dict[str, int], float]:
         torch.cuda.manual_seed_all(0)
         dtype_str = get_config_dtype_str(
-            dtype, use_int8_w8a16=use_int8_w8a16, use_fp8_w8a8=use_fp8_w8a8
+            dtype, use_int8_w8a16=use_int8_w8a16, use_fp8_w8a8=use_fp8_w8a8, use_int4_w4a16=use_int4_w4a16
         )
         # NOTE(woosuk): The current naming convention uses w2.shape[2], which
         # is the intermediate size after silu_and_mul.
@@ -314,6 +371,7 @@ class BenchmarkWorker:
         use_fp8_w8a8: bool,
         use_int8_w8a8: bool,
         use_int8_w8a16: bool,
+        use_int4_w4a16: bool,
         block_shape: List[int],
         search_space: List[Dict[str, int]],
     ) -> Dict[str, int]:
@@ -373,6 +431,7 @@ def save_configs(
     use_fp8_w8a8: bool,
     use_int8_w8a8: bool,
     use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
     block_shape: List[int],
 ) -> None:
     dtype_str = get_config_dtype_str(
@@ -380,6 +439,7 @@ def save_configs(
         use_int8_w8a16=use_int8_w8a16,
         use_fp8_w8a8=use_fp8_w8a8,
         use_int8_w8a8=use_int8_w8a8,
+        use_int4_w4a16=use_int4_w4a16
     )
 
     # NOTE(woosuk): The current naming convention uses w2.shape[2], which
@@ -458,6 +518,7 @@ def main(args: argparse.Namespace):
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
+    use_int4_w4a16 = args.dtype == "int4_w4a16"
     block_shape = None
     if (
         hasattr(config, "quantization_config")
@@ -465,7 +526,11 @@ def main(args: argparse.Namespace):
     ):
         block_shape = config.quantization_config["weight_block_size"]
         assert len(block_shape) == 2
-
+    if (
+        hasattr(config, "quantization_config")
+        and "group_size" in config.quantization_config
+    ):
+        block_shape = [0, config.quantization_config["group_size"]]
     if args.batch_size is None:
         batch_sizes = [
             1,
@@ -477,22 +542,22 @@ def main(args: argparse.Namespace):
             32,
             48,
             64,
-            96,
-            128,
-            256,
-            512,
+            # 96,
+            # 128,
+            # 256,
+            # 512,
             1024,
-            1536,
-            2048,
-            3072,
-            4096,
+            # 1536,
+            # 2048,
+            # 3072,
+            # 4096,
         ]
     else:
         batch_sizes = [args.batch_size]
-
     ray.init()
     num_gpus = int(ray.available_resources()["GPU"])
     workers = [BenchmarkWorker.remote(args.seed) for _ in range(num_gpus)]
+    # worker = BenchmarkWorker(args.seed)
 
     def _distribute(method: str, inputs: List[Any]) -> List[Any]:
         outputs = []
@@ -517,6 +582,24 @@ def main(args: argparse.Namespace):
         print(f"Start tuning over {len(search_space)} configurations...")
 
         start = time.perf_counter()
+
+        # non distrbuted
+        # for batch_size in batch_sizes:
+        #     configs = worker.tune(
+        #             batch_size,
+        #             E,
+        #             shard_intermediate_size,
+        #             hidden_size,
+        #             topk,
+        #             dtype,
+        #             use_fp8_w8a8,
+        #             use_int8_w8a8,
+        #             use_int8_w8a16,
+        #             use_int4_w4a16,
+        #             block_shape,
+        #             search_space,
+        #     )
+
         configs = _distribute(
             "tune",
             [
@@ -530,6 +613,7 @@ def main(args: argparse.Namespace):
                     use_fp8_w8a8,
                     use_int8_w8a8,
                     use_int8_w8a16,
+                    use_int4_w4a16,
                     block_shape,
                     search_space,
                 )
@@ -549,11 +633,28 @@ def main(args: argparse.Namespace):
             use_fp8_w8a8,
             use_int8_w8a8,
             use_int8_w8a16,
+            use_int4_w4a16,
             block_shape,
         )
         end = time.perf_counter()
         print(f"Tuning took {end - start:.2f} seconds")
     else:
+        # none distribute
+        # outputs=[]
+        # for batch_size in batch_sizes:
+        #     outputs.append(worker.benchmark(
+        #                 batch_size,
+        #                 E,
+        #                 shard_intermediate_size,
+        #                 hidden_size,
+        #                 topk,
+        #                 dtype,
+        #                 use_fp8_w8a8,
+        #                 use_int8_w8a8,
+        #                 use_int8_w8a16,
+        #                 use_int4_w4a16,
+        #                 block_shape,
+        #             ))
         outputs = _distribute(
             "benchmark",
             [
@@ -567,6 +668,7 @@ def main(args: argparse.Namespace):
                     use_fp8_w8a8,
                     use_int8_w8a8,
                     use_int8_w8a16,
+                    use_int4_w4a16,
                     block_shape,
                 )
                 for batch_size in batch_sizes
@@ -587,7 +689,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dtype",
         type=str,
-        choices=["auto", "fp8_w8a8", "int8_w8a16", "int8_w8a8"],
+        choices=["auto", "fp8_w8a8", "int8_w8a16", "int8_w8a8", "int4_w4a16"],
         default="auto",
     )
     parser.add_argument("--seed", type=int, default=0)

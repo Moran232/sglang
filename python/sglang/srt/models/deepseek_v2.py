@@ -156,6 +156,8 @@ _is_sm100_supported = is_cuda() and is_sm100_supported()
 
 logger = logging.getLogger(__name__)
 
+# NOTE:(zmq) for close sharded experts
+NO_FUSE_SHARED_EXPERTS=0
 
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
@@ -767,10 +769,10 @@ class DeepseekV2AttentionMLA(nn.Module):
         self.hidden_size = hidden_size
         self.qk_nope_head_dim = qk_nope_head_dim
         self.qk_rope_head_dim = qk_rope_head_dim
-        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim #128+64
         self.v_head_dim = v_head_dim
-        self.q_lora_rank = q_lora_rank
-        self.kv_lora_rank = kv_lora_rank
+        self.q_lora_rank = q_lora_rank #1536
+        self.kv_lora_rank = kv_lora_rank #512
         attn_tp_rank = get_attention_tp_rank()
         attn_tp_size = get_attention_tp_size()
 
