@@ -1821,13 +1821,13 @@ class DeepseekV2ForCausalLM(nn.Module):
                             q_a_proj_weight = cached_a_proj[q_a_proj_name]
                             kv_a_proj_weight = cached_a_proj[kv_a_proj_name]
 
-                            if 'model.decoder' in name:
+                            if self.quant_config is not None and self.quant_config.get_name() in ("awq", "awq_marlin", "moe_wna16") and 'model.decoder' not in name:
                                 fused_weight = torch.cat(
-                                    [q_a_proj_weight, kv_a_proj_weight], dim=0
+                                    [q_a_proj_weight, kv_a_proj_weight], dim=1
                                 )
                             else:
                                 fused_weight = torch.cat(
-                                    [q_a_proj_weight, kv_a_proj_weight], dim=1
+                                    [q_a_proj_weight, kv_a_proj_weight], dim=0
                                 )
                             param_name = name.replace(
                                 "q_a_proj", "fused_qkv_a_proj_with_mqa"
