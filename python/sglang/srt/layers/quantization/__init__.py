@@ -32,7 +32,7 @@ try:
     from vllm.model_executor.layers.quantization.marlin import MarlinConfig
     from vllm.model_executor.layers.quantization.qqq import QQQConfig
     from vllm.model_executor.layers.quantization.tpu_int8 import Int8TpuConfig
-
+    from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsConfig
     VLLM_AVAILABLE = True
 except ImportError:
     VLLM_AVAILABLE = False
@@ -53,9 +53,9 @@ from sglang.srt.layers.linear import LinearBase, UnquantizedLinearMethod
 from sglang.srt.layers.quantization.awq import AWQConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.blockwise_int8 import BlockInt8Config
-from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
-    CompressedTensorsConfig,
-)
+# from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
+#     CompressedTensorsConfig,
+# )
 from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.gptq import (
     GPTQConfig,

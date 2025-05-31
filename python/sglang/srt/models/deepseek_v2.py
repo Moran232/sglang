@@ -480,10 +480,10 @@ class DeepseekV2AttentionMLA(nn.Module):
         self.hidden_size = hidden_size
         self.qk_nope_head_dim = qk_nope_head_dim
         self.qk_rope_head_dim = qk_rope_head_dim
-        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+        self.qk_head_dim = qk_nope_head_dim + qk_rope_head_dim #128+64
         self.v_head_dim = v_head_dim
-        self.q_lora_rank = q_lora_rank
-        self.kv_lora_rank = kv_lora_rank
+        self.q_lora_rank = q_lora_rank #1536
+        self.kv_lora_rank = kv_lora_rank #512
         attn_tp_rank = get_attention_tp_rank()
         attn_tp_size = get_attention_tp_size()
 
@@ -1427,7 +1427,9 @@ class DeepseekV2ForCausalLM(nn.Module):
     def determine_n_share_experts_fusion(
         self, architecture: str = "DeepseekV3ForCausalLM"
     ):
+        
         self.n_share_experts_fusion = global_server_args_dict["n_share_experts_fusion"]
+        return
         if self.n_share_experts_fusion > 0:
             # Only Deepseek V3/R1 can use shared experts fusion optimization now.
             if (
@@ -1635,6 +1637,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         if self.n_share_experts_fusion > 0:
             weights_list = list(weights)
             weights_dict = dict(weights_list)
+
             if self.quant_config is None or self.quant_config.get_name() == "w8a8_int8":
                 suffix_list = [
                     "down_proj.weight",
@@ -1653,7 +1656,7 @@ class DeepseekV2ForCausalLM(nn.Module):
                     "up_proj.weight",
                     "up_proj.weight_scale_inv",
                 ]
-            elif self.quant_config is not None and self.quant_config.get_name() in("awq", "awq_marlin", "moe_wna16"):
+            elif self.quant_config is not None and self.quant_config.get_name() in ("awq", "awq_marlin", "moe_wna16"):
                 suffix_list = [
                         "down_proj.qweight",
                         "down_proj.qzeros",
@@ -1664,6 +1667,18 @@ class DeepseekV2ForCausalLM(nn.Module):
                         "up_proj.qweight",
                         "up_proj.qzeros",
                         "up_proj.scales",
+                ]
+            elif self.quant_config is not None and self.quant_config.get_name() in ("compressed_tensors",) and self.quant_config.quant_format == 'pack-quantized':
+              suffix_list = [
+                        "down_proj.weight_packed",
+                        "down_proj.weight_shape",
+                        "down_proj.weight_scale",
+                        "gate_proj.weight_packed",
+                        "gate_proj.weight_shape",
+                        "gate_proj.weight_scale",
+                        "up_proj.weight_packed",
+                        "up_proj.weight_shape",
+                        "up_proj.weight_scale",
                 ]
             names_to_remove = []
 
@@ -1677,27 +1692,27 @@ class DeepseekV2ForCausalLM(nn.Module):
                 else [nextn_layer_id]
             )
 
-            for moe_layer in tqdm(
-                moe_layers,
-                desc=f"Cloning {self.n_share_experts_fusion} "
-                "replicas of the shared expert into MoE",
-            ):
-                for suffix in suffix_list:
-                    shared_expert_weight_name = (
-                        f"model.layers.{moe_layer}.mlp.shared_experts.{suffix}"
-                    )
-                    for num_repeat in range(self.n_share_experts_fusion):
-                        weights_list.append(
-                            (
-                                f"model.layers.{moe_layer}."
-                                f"mlp.experts."
-                                f"{self.config.n_routed_experts + num_repeat}"
-                                f".{suffix}",
-                                weights_dict[shared_expert_weight_name],
-                            )
-                        )
-                    names_to_remove += [shared_expert_weight_name]
-            weights = [w for w in weights_list if w[0] not in names_to_remove]
+            # for moe_layer in tqdm(
+            #     moe_layers,
+            #     desc=f"Cloning {self.n_share_experts_fusion} "
+            #     "replicas of the shared expert into MoE",
+            # ):
+            #     for suffix in suffix_list:
+            #         shared_expert_weight_name = (
+            #             f"model.layers.{moe_layer}.mlp.shared_experts.{suffix}"
+            #         )
+            #         for num_repeat in range(self.n_share_experts_fusion):
+            #             weights_list.append(
+            #                 (
+            #                     f"model.layers.{moe_layer}."
+            #                     f"mlp.experts."
+            #                     f"{self.config.n_routed_experts + num_repeat}"
+            #                     f".{suffix}",
+            #                     weights_dict[shared_expert_weight_name],
+            #                 )
+            #             )
+            #         names_to_remove += [shared_expert_weight_name]
+            # weights = [w for w in weights_list if w[0] not in names_to_remove]
 
         # Params for weights, fp8 weight scales, fp8 activation scales
         # (param_name, weight_name, expert_id, shard_id)
@@ -1826,9 +1841,12 @@ class DeepseekV2ForCausalLM(nn.Module):
                                     [q_a_proj_weight, kv_a_proj_weight], dim=1
                                 )
                             else:
-                                fused_weight = torch.cat(
-                                    [q_a_proj_weight, kv_a_proj_weight], dim=0
-                                )
+                                if name.endswith('shape'):
+                                    fused_weight = torch.tensor([q_a_proj_weight[0] + kv_a_proj_weight[0], q_a_proj_weight[1]])
+                                else:
+                                    fused_weight = torch.cat(
+                                        [q_a_proj_weight, kv_a_proj_weight], dim=0
+                                    )
                             param_name = name.replace(
                                 "q_a_proj", "fused_qkv_a_proj_with_mqa"
                             )
