@@ -115,6 +115,8 @@ if _is_hip:
 
 logger = logging.getLogger(__name__)
 
+# NOTE:(zmq) for close sharded experts
+NO_FUSE_SHARED_EXPERTS=0
 
 class AttnForwardMethod(IntEnum):
     # Use multi-head attention
@@ -1429,7 +1431,11 @@ class DeepseekV2ForCausalLM(nn.Module):
     ):
         
         self.n_share_experts_fusion = global_server_args_dict["n_share_experts_fusion"]
-        return
+        # NOTE:(zmq) for close sharded experts
+        if NO_FUSE_SHARED_EXPERTS:
+            self.n_share_experts_fusion = 0
+            global_server_args_dict["n_share_experts_fusion"]=0
+            return
         if self.n_share_experts_fusion > 0:
             # Only Deepseek V3/R1 can use shared experts fusion optimization now.
             if (
@@ -1692,27 +1698,27 @@ class DeepseekV2ForCausalLM(nn.Module):
                 else [nextn_layer_id]
             )
 
-            # for moe_layer in tqdm(
-            #     moe_layers,
-            #     desc=f"Cloning {self.n_share_experts_fusion} "
-            #     "replicas of the shared expert into MoE",
-            # ):
-            #     for suffix in suffix_list:
-            #         shared_expert_weight_name = (
-            #             f"model.layers.{moe_layer}.mlp.shared_experts.{suffix}"
-            #         )
-            #         for num_repeat in range(self.n_share_experts_fusion):
-            #             weights_list.append(
-            #                 (
-            #                     f"model.layers.{moe_layer}."
-            #                     f"mlp.experts."
-            #                     f"{self.config.n_routed_experts + num_repeat}"
-            #                     f".{suffix}",
-            #                     weights_dict[shared_expert_weight_name],
-            #                 )
-            #             )
-            #         names_to_remove += [shared_expert_weight_name]
-            # weights = [w for w in weights_list if w[0] not in names_to_remove]
+            for moe_layer in tqdm(
+                moe_layers,
+                desc=f"Cloning {self.n_share_experts_fusion} "
+                "replicas of the shared expert into MoE",
+            ):
+                for suffix in suffix_list:
+                    shared_expert_weight_name = (
+                        f"model.layers.{moe_layer}.mlp.shared_experts.{suffix}"
+                    )
+                    for num_repeat in range(self.n_share_experts_fusion):
+                        weights_list.append(
+                            (
+                                f"model.layers.{moe_layer}."
+                                f"mlp.experts."
+                                f"{self.config.n_routed_experts + num_repeat}"
+                                f".{suffix}",
+                                weights_dict[shared_expert_weight_name],
+                            )
+                        )
+                    names_to_remove += [shared_expert_weight_name]
+            weights = [w for w in weights_list if w[0] not in names_to_remove]
 
         # Params for weights, fp8 weight scales, fp8 activation scales
         # (param_name, weight_name, expert_id, shard_id)
