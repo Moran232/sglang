@@ -485,6 +485,7 @@ def main(args: argparse.Namespace):
         topk = config.num_experts_per_tok
         intermediate_size = config.moe_intermediate_size
         shard_intermediate_size = 2 * intermediate_size // args.tp_size
+
     elif config.architectures[0] == "Llama4ForConditionalGeneration":
         E = config.text_config.num_local_experts + (
             0 if args.disable_shared_experts_fusion else 1
@@ -519,6 +520,10 @@ def main(args: argparse.Namespace):
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int4_w4a16 = args.dtype == "int4_w4a16"
+
+    if use_int4_w4a16:
+        shard_intermediate_size = shard_intermediate_size//2
+        
     block_shape = None
     if (
         hasattr(config, "quantization_config")
