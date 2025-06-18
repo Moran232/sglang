@@ -258,7 +258,7 @@ class ReplicatedLinear(LinearBase):
             self.params_dtype,
             weight_loader=self.weight_loader,
         )
-
+        self.prefix = prefix
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size, dtype=self.params_dtype)
@@ -386,7 +386,7 @@ class ColumnParallelLinear(LinearBase):
             )
         else:
             self.register_parameter("bias", None)
-
+        self.prefix=prefix
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         output_dim = getattr(param, "output_dim", None)
 
@@ -1184,7 +1184,7 @@ class RowParallelLinear(LinearBase):
         self.input_size_per_partition = divide(input_size, self.tp_size)
         assert self.quant_method is not None
         self.use_presharded_weights = use_presharded_weights
-
+        self.prefix=prefix
         self.quant_method.create_weights(
             layer=self,
             input_size_per_partition=self.input_size_per_partition,

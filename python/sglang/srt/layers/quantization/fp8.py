@@ -404,6 +404,7 @@ class Fp8LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # log_info_on_rank0(logger, f"==> fp8  linear {layer.prefix}: {x.shape} {layer.weight.shape}")
 
         if self.use_marlin:
             return apply_fp8_marlin_linear(
