@@ -1482,6 +1482,17 @@ class DeepseekV2ForCausalLM(nn.Module):
 
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
+        cur_prompt_len = forward_batch.seq_lens.item()
+        mode = forward_batch.forward_mode.name
+        shape = '_'.join([str(i) for i in hidden_states.shape])
+
+        cus_p = forward_batch.sampling_info.custom_params
+
+        save_file = f"{mode}_prompt_len-{cur_prompt_len}_shape-{shape}.pt"
+        log_info_on_rank0(logger, save_file)
+
+        # torch.save(hidden_states, f'request_1/{save_file}')
+
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
