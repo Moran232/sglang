@@ -95,7 +95,7 @@ from sglang.srt.utils import (
     is_hip,
     log_info_on_rank0,
 )
-
+from sglang.srt.distributed import get_tensor_model_parallel_rank
 _is_hip = is_hip()
 _is_cuda = is_cuda()
 
@@ -1491,7 +1491,8 @@ class DeepseekV2ForCausalLM(nn.Module):
         save_file = f"{mode}_prompt_len-{cur_prompt_len}_shape-{shape}.pt"
         log_info_on_rank0(logger, save_file)
 
-        torch.save(hidden_states, f'request/{save_file}')
+        if get_tensor_model_parallel_rank() == 0:
+            torch.save(hidden_states, f'request/{save_file}')
         log_info_on_rank0(logger, 'saved')
 
         return self.logits_processor(
