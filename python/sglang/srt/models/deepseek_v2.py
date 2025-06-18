@@ -1489,11 +1489,11 @@ class DeepseekV2ForCausalLM(nn.Module):
         cus_p = forward_batch.sampling_info.custom_params
 
         save_file = f"{mode}_prompt_len-{cur_prompt_len}_shape-{shape}.pt"
-        log_info_on_rank0(logger, save_file)
 
-        if get_tensor_model_parallel_rank() == 0:
+        if get_tensor_model_parallel_rank() == 0 and forward_batch.forward_mode.is_extend():
+            log_info_on_rank0(logger, save_file)
             torch.save(hidden_states, f'request/{save_file}')
-        log_info_on_rank0(logger, 'saved')
+            log_info_on_rank0(logger, 'saved')
 
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
