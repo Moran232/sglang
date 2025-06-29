@@ -285,7 +285,9 @@ class ReplicatedLinear(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias if not self.skip_bias_add else None
         assert self.quant_method is not None
-        output = self.quant_method.apply(self, x, bias)
+        output = torch.empty((x.shape[0], self.output_size), device=x.device, dtype=x.dtype)
+        # output = self.quant_method.apply(self, x, bias)
+        self.quant_method.apply(self, output, x, bias)
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
 
@@ -351,11 +353,13 @@ class ColumnParallelLinear(LinearBase):
         assert self.quant_method is not None
         self.output_size_per_partition = divide(self.output_size, tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
+        self.outpu_ture = self.output_size_per_partition
         # If QKV or MergedColumn, use output size of each partition.
         if hasattr(self, "output_sizes"):
             self.output_partition_sizes = [
                 divide(output_size, tp_size) for output_size in self.output_sizes
             ]
+            self.outpu_ture = self.output_partition_sizes[0] *2
 
         if output_sizes is None:
             output_sizes = [output_size]
@@ -442,7 +446,11 @@ class ColumnParallelLinear(LinearBase):
 
         # Matrix multiply.
         assert self.quant_method is not None
-        output_parallel = self.quant_method.apply(self, input_, bias)
+        output_parallel = torch.empty((input_.shape[0], self.outpu_ture), device=input_.device, dtype=input_.dtype)
+        self.quant_method.apply(self, output_parallel, input_, bias)
+        
+        # output_parallel = self.quant_method.apply(self, input_, bias)
+
         if self.gather_output:
             # All-gather across the partitions.
             output = tensor_model_parallel_all_gather(output_parallel)
@@ -1288,7 +1296,13 @@ class RowParallelLinear(LinearBase):
         # Only fuse bias add into GEMM for rank 0 (this ensures that
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
-        output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
+
+        # make empty tensor
+        output_parallel = torch.empty((input_.shape[0], self.output_size), dtype=input_.dtype, device=input_.device)
+        # do something
+        # ...
+        self.quant_method.apply(self, output_parallel, input_parallel, bias=bias_)
+
         if self.reduce_results and self.tp_size > 1:
             output = tensor_model_parallel_all_reduce(output_parallel)
         else:

@@ -741,6 +741,7 @@ if _is_hip:
 
 
 def w8a8_block_fp8_matmul(
+    C: torch.Tensor,
     A: torch.Tensor,
     B: torch.Tensor,
     As: torch.Tensor,
@@ -778,7 +779,7 @@ def w8a8_block_fp8_matmul(
     assert triton.cdiv(K, block_k) == Bs.shape[1]
 
     C_shape = A.shape[:-1] + (N,)
-    C = A.new_empty(C_shape, dtype=output_dtype)
+    # C = A.new_empty(C_shape, dtype=output_dtype)
 
     # deepgemm only support bf16
     if C.dtype == torch.bfloat16 and _ENABLE_JIT_DEEPGEMM:
@@ -836,7 +837,7 @@ def w8a8_block_fp8_matmul(
             **config,
         )
 
-    return C
+    # return C
 
 
 @triton.jit

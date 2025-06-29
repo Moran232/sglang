@@ -126,6 +126,7 @@ CUTLASS_BLOCK_FP8_SUPPORTED = cutlass_block_fp8_supported()
 
 
 def apply_w8a8_block_fp8_linear(
+    output: torch.Tensor,
     input: torch.Tensor,
     weight: torch.Tensor,
     block_size: List[int],
@@ -170,13 +171,13 @@ def apply_w8a8_block_fp8_linear(
             q_input, x_scale = per_token_group_quant_fp8(
                 input_2d, block_size[1], column_major_scales=False
             )
-        output = w8a8_block_fp8_matmul(
+        w8a8_block_fp8_matmul(output,
             q_input, weight, x_scale, weight_scale, block_size, output_dtype=input.dtype
         )
 
     if bias is not None:
         output = output + bias
-    return output.to(dtype=input.dtype).view(*output_shape)
+    # return output.to(dtype=input.dtype).view(*output_shape)
 
 
 def input_to_float8(

@@ -642,7 +642,9 @@ class FusedMoE(torch.nn.Module):
         assert self.quant_method is not None
 
         # Matrix multiply.
-        final_hidden_states = self.quant_method.apply(
+        # inplace modify hidden_states
+        # do something for hidden_states
+        self.quant_method.apply(
             layer=self,
             x=hidden_states,
             router_logits=router_logits,
@@ -659,9 +661,11 @@ class FusedMoE(torch.nn.Module):
         )
 
         if self.reduce_results and self.tp_size > 1:
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+            final_hidden_states = tensor_model_parallel_all_reduce(hidden_states)
 
-        return final_hidden_states
+            return final_hidden_states
+        else:
+            return hidden_states
 
     @classmethod
     def make_expert_params_mapping(

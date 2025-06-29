@@ -401,6 +401,7 @@ class Fp8LinearMethod(LinearMethodBase):
     def apply(
         self,
         layer: torch.nn.Module,
+        output: torch.Tensor,
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -418,7 +419,8 @@ class Fp8LinearMethod(LinearMethodBase):
             )
 
         if self.block_quant:
-            return apply_w8a8_block_fp8_linear(
+            apply_w8a8_block_fp8_linear(
+                output=output,
                 input=x,
                 weight=layer.weight,
                 block_size=self.quant_config.weight_block_size,
@@ -426,7 +428,7 @@ class Fp8LinearMethod(LinearMethodBase):
                 input_scale=None,
                 bias=bias,
             )
-
+            return
         return apply_fp8_linear(
             input=x,
             weight=layer.weight,

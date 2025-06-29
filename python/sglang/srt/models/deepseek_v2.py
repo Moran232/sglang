@@ -441,7 +441,8 @@ class DeepseekV2MoE(nn.Module):
 
         if (s := state.pop("shared_output")) is not None:
             final_hidden_states = final_hidden_states + s
-
+    
+        # do smoething for final_hidden_states
         if (not self._enable_deepep_moe) and (self.tp_size > 1):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
 
