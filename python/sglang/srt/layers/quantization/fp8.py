@@ -442,6 +442,7 @@ class Fp8LinearMethod(LinearMethodBase):
     def apply(
         self,
         layer: torch.nn.Module,
+        output: torch.Tensor,
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -470,7 +471,8 @@ class Fp8LinearMethod(LinearMethodBase):
                     True,  # is_vnni
                 )
 
-            return self.w8a8_block_fp8_linear(
+            apply_w8a8_block_fp8_linear(
+                output=output,
                 input=x,
                 weight=layer.weight,
                 block_size=self.quant_config.weight_block_size,
@@ -478,7 +480,7 @@ class Fp8LinearMethod(LinearMethodBase):
                 input_scale=None,
                 bias=bias,
             )
-
+            return
         return apply_fp8_linear(
             input=x,
             weight=layer.weight,
@@ -990,6 +992,7 @@ class Fp8MoEMethod(FusedMoEMethodBase):
         self,
         layer: torch.nn.Module,
         x: torch.Tensor,
+        out_hidden_states: torch.Tensor,
         topk_output: TopKOutput,
         moe_runner_config: MoeRunnerConfig,
     ) -> torch.Tensor:
@@ -1061,8 +1064,10 @@ class Fp8MoEMethod(FusedMoEMethodBase):
             # Scale by routed_scaling_factor is fused into select_experts.
             return output
         # Expert fusion with FP8 quantization
-        return fused_experts(
+        # return 
+        fused_experts(
             x,
+            out_hidden_states,
             layer.w13_weight,
             layer.w2_weight,
             topk_output=topk_output,

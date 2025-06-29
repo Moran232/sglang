@@ -2203,6 +2203,7 @@ class DeepseekV2ForCausalLM(nn.Module):
         input_embeds: torch.Tensor = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> torch.Tensor:
+        import ipdb;ipdb.set_trace()
         hidden_states = self.model(
             input_ids, positions, forward_batch, input_embeds, pp_proxy_tensors
         )

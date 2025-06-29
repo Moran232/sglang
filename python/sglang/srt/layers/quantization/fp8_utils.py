@@ -149,10 +149,10 @@ def dispatch_w8a8_block_fp8_linear() -> Callable:
     else:
         return triton_w8a8_block_fp8_linear
 
-
-def flashinfer_gemm_w8a8_block_fp8_linear(
+def apply_w8a8_block_fp8_linear(
+    output: torch.Tensor,
     input: torch.Tensor,
-    weight: torch.Tensor,
+    weight: torch.Tensor, 
     block_size: List[int],
     weight_scale: torch.Tensor,
     input_scale: Optional[torch.Tensor] = None,
@@ -176,6 +176,68 @@ def flashinfer_gemm_w8a8_block_fp8_linear(
         backend="trtllm",
     )
 
+    if CUTLASS_BLOCK_FP8_SUPPORTED and shape_supported_by_cutlass:
+        q_input, x_scale = per_token_group_quant_fp8(
+            input_2d, block_size[1], column_major_scales=True
+        )
+        output = fp8_blockwise_scaled_mm(
+            q_input, weight.T, x_scale, weight_scale.T, out_dtype=input.dtype
+        )
+    elif _is_hip and use_aiter_moe:
+        q_input, x_scale = per_token_group_quant_fp8(
+            input_2d, block_size[1], column_major_scales=False
+        )
+        output = torch.zeros(
+            [q_input.shape[0], weight.shape[0]],
+            dtype=input.dtype,
+            device=q_input.device,
+        )
+        gemm_a8w8_blockscale(q_input, weight, x_scale, weight_scale, output)
+    else:
+        if _ENABLE_JIT_DEEPGEMM:
+            q_input, x_scale = sglang_per_token_group_quant_fp8(
+                input_2d,
+                block_size[1],
+                column_major_scales=True,
+                scale_tma_aligned=True,
+            )
+        else:
+            q_input, x_scale = per_token_group_quant_fp8(
+                input_2d, block_size[1], column_major_scales=False
+            )
+        w8a8_block_fp8_matmul(output,
+            q_input, weight, x_scale, weight_scale, block_size, output_dtype=input.dtype
+        )
+
+    if bias is not None:
+        output = output + bias
+    # return output.to(dtype=input.dtype).view(*output_shape)
+
+def flashinfer_gemm_w8a8_block_fp8_linear(
+    input: torch.Tensor,
+    weight: torch.Tensor, 
+    block_size: List[int],
+    weight_scale: torch.Tensor,
+    input_scale: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    assert input_scale is None
+
+    input_2d = input.view(-1, input.shape[-1])
+    output_shape = [*input.shape[:-1], weight.shape[0]]
+
+    q_input, x_scale = sglang_per_token_group_quant_fp8(
+        input_2d, block_size[1], column_major_scales=True
+    )
+    # TRTLLM requires column-major scaling factors
+    output = gemm_fp8_nt_groupwise(
+        q_input,
+        weight,
+        x_scale,
+        weight_scale,
+        out_dtype=input_2d.dtype,
+        backend="trtllm",
+    )
     if bias is not None:
         output += bias
 

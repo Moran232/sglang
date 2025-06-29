@@ -95,6 +95,218 @@ class FusedMoeWeightScaleSupported(Enum):
     BLOCK = "block"
 
 
+class FusedMoEMethodBase(QuantizeMethodBase):
+
+    @abstractmethod
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        num_experts: int,
+        hidden_size: int,
+        intermediate_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ):
+        raise NotImplementedError
+
+    @abstractmethod
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        router_logits: torch.Tensor,
+        top_k: int,
+        renormalize: bool,
+        use_grouped_topk: bool,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+
+class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
+    """MoE method without quantization."""
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        num_experts: int,
+        hidden_size: int,
+        intermediate_size: int,
+        params_dtype: torch.dtype,
+        **extra_weight_attrs,
+    ):
+        # Fused gate_up_proj (column parallel)
+        w13_weight = torch.nn.Parameter(
+            torch.empty(
+                num_experts, 2 * intermediate_size, hidden_size, dtype=params_dtype
+            ),
+            requires_grad=False,
+        )
+        layer.register_parameter("w13_weight", w13_weight)
+        set_weight_attrs(w13_weight, extra_weight_attrs)
+
+        # down_proj (row parallel)
+        w2_weight = torch.nn.Parameter(
+            torch.empty(
+                num_experts, hidden_size, intermediate_size, dtype=params_dtype
+            ),
+            requires_grad=False,
+        )
+        layer.register_parameter("w2_weight", w2_weight)
+        set_weight_attrs(w2_weight, extra_weight_attrs)
+
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        if _is_hip and get_bool_env_var("SGLANG_AITER_MOE"):
+            layer.w13_weight = torch.nn.Parameter(
+                shuffle_weight(layer.w13_weight.data, (16, 16)),
+                requires_grad=False,
+            )
+            torch.cuda.empty_cache()
+            layer.w2_weight = torch.nn.Parameter(
+                shuffle_weight(layer.w2_weight.data, (16, 16)),
+                requires_grad=False,
+            )
+            torch.cuda.empty_cache()
+        return
+
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        router_logits: torch.Tensor,
+        top_k: int,
+        renormalize: bool,
+        use_grouped_topk: bool,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        correction_bias: Optional[torch.Tensor] = None,
+        activation: str = "silu",
+        apply_router_weight_on_input: bool = False,
+        inplace: bool = True,
+        no_combine: bool = False,
+        routed_scaling_factor: Optional[float] = None,
+    ) -> torch.Tensor:
+        return self.forward(
+            x=x,
+            layer=layer,
+            router_logits=router_logits,
+            top_k=top_k,
+            renormalize=renormalize,
+            use_grouped_topk=use_grouped_topk,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            correction_bias=correction_bias,
+            activation=activation,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            inplace=inplace,
+            no_combine=no_combine,
+            routed_scaling_factor=routed_scaling_factor,
+        )
+
+    def forward_cuda(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        use_grouped_topk: bool,
+        top_k: int,
+        router_logits: torch.Tensor,
+        renormalize: bool,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        correction_bias: Optional[torch.Tensor] = None,
+        activation: str = "silu",
+        apply_router_weight_on_input: bool = False,
+        inplace: bool = True,
+        no_combine: bool = False,
+        routed_scaling_factor: Optional[float] = None,
+    ) -> torch.Tensor:
+        topk_weights, topk_ids = select_experts(
+            hidden_states=x,
+            router_logits=router_logits,
+            use_grouped_topk=use_grouped_topk,
+            top_k=top_k,
+            renormalize=renormalize,
+            topk_group=topk_group,
+            num_expert_group=num_expert_group,
+            custom_routing_function=custom_routing_function,
+            correction_bias=correction_bias,
+            routed_scaling_factor=routed_scaling_factor,
+        )
+
+        if _is_hip and get_bool_env_var("SGLANG_AITER_MOE"):
+            assert not no_combine, "unsupported"
+            if apply_router_weight_on_input:
+                assert (
+                    topk_weights.dim() == 2
+                ), "`topk_weights` should be in shape (num_tokens, topk)"
+                _, topk = topk_weights.shape
+                assert (
+                    topk == 1
+                ), "Only support topk=1 when `apply_router_weight_on_input` is True"
+                x = x * topk_weights.to(x.dtype)
+                topk_weights = torch.ones_like(
+                    topk_weights, dtype=torch.float32
+                )  # topk_weights must be FP32 (float32)
+
+            return ck_moe_2stages(
+                x,
+                layer.w13_weight,
+                layer.w2_weight,
+                topk_weights,
+                topk_ids,
+                activation=(
+                    ActivationType.Silu if activation == "silu" else ActivationType.Gelu
+                ),
+            )
+        else:
+            return fused_experts(
+                hidden_states=x,
+                w1=layer.w13_weight,
+                w2=layer.w2_weight,
+                topk_weights=topk_weights,
+                topk_ids=topk_ids,
+                inplace=inplace and not no_combine,
+                activation=activation,
+                apply_router_weight_on_input=apply_router_weight_on_input,
+                no_combine=no_combine,
+            )
+
+    def forward_cpu(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        use_grouped_topk: bool,
+        top_k: int,
+        router_logits: torch.Tensor,
+        renormalize: bool,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        correction_bias: Optional[torch.Tensor] = None,
+        inplace: bool = True,
+    ) -> torch.Tensor:
+        return moe_forward_native(
+            layer,
+            x,
+            use_grouped_topk,
+            top_k,
+            router_logits,
+            renormalize,
+            topk_group,
+            num_expert_group,
+            custom_routing_function,
+            correction_bias,
+        )
+
+    def forward_tpu(self, *args, **kwargs) -> torch.Tensor:
+        raise NotImplementedError("The TPU backend currently does not support MoE.")
+
+    forward_native = forward_cuda
+
+from sglang.srt.layers.linear import CustomAllReduce
+from sglang.srt.distributed import get_tp_group
+
 class FusedMoE(torch.nn.Module):
     """FusedMoE layer for MoE models.
 
@@ -226,6 +438,7 @@ class FusedMoE(torch.nn.Module):
             ),
             with_bias=with_bias,
         )
+        self.all_reduce_op = CustomAllReduce(group=get_tp_group().device_group)
 
     def _load_per_tensor_weight_scale(
         self,
@@ -810,12 +1023,14 @@ class FusedMoE(torch.nn.Module):
 
         # Matrix multiply.
         with use_symmetric_memory(get_tp_group()) as sm:
-
-            final_hidden_states = self.quant_method.apply(
+            final_hidden_states = self.all_reduce_op.make_output_tensor(hidden_states.shape, dtype=hidden_states.dtype, device=hidden_states.device)
+            self.quant_method.apply(
                 layer=self,
                 x=hidden_states,
+                out_hidden_states=final_hidden_states
                 topk_output=topk_output,
                 moe_runner_config=self.moe_runner_config,
+                inplace = False
             )
             sm.tag(final_hidden_states)
 
@@ -824,9 +1039,41 @@ class FusedMoE(torch.nn.Module):
         ].contiguous()
 
         if self.reduce_results and (self.moe_tp_size > 1 or self.moe_ep_size > 1):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+            final_hidden_states *= self.routed_scaling_factor
+            output_hidden_states = self.all_reduce_op.all_reduce(final_hidden_states)
+        else:
+            output_hidden_states = final_hidden_states
+        return output_hidden_states
 
-        return final_hidden_states
+        # Matrix multiply.
+        # inplace modify hidden_states
+        # do something for hidden_states
+        # final_hidden_states = self.all_reduce_op.make_output_tensor(hidden_states.shape, dtype=hidden_states.dtype, device=hidden_states.device)
+        # self.quant_method.apply(
+        #     layer=self,
+        #     x=hidden_states,
+        #     out_hidden_states=final_hidden_states,
+        #     router_logits=router_logits,
+        #     top_k=self.top_k,
+        #     renormalize=self.renormalize,
+        #     use_grouped_topk=self.use_grouped_topk,
+        #     topk_group=self.topk_group,
+        #     num_expert_group=self.num_expert_group,
+        #     custom_routing_function=self.custom_routing_function,
+        #     correction_bias=self.correction_bias,
+        #     activation=self.activation,
+        #     apply_router_weight_on_input=self.apply_router_weight_on_input,
+        #     routed_scaling_factor=self.routed_scaling_factor,
+        #     inplace = False
+        # )
+
+        # if self.reduce_results and self.tp_size > 1:
+        #     # do reduce here, mv final_hidden_states *= self.routed_scaling_factor from op_output
+        #     final_hidden_states *= self.routed_scaling_factor
+        #     output_hidden_states = self.all_reduce_op.all_reduce(final_hidden_states)
+        # else:
+        #     output_hidden_states = final_hidden_states
+        # return output_hidden_states
 
     @classmethod
     def make_expert_params_mapping(
