@@ -1156,6 +1156,7 @@ direct_register_custom_op(
 
 def outplace_fused_experts(
     hidden_states: torch.Tensor,
+    out_hidden_states: torch.Tensor,
     w1: torch.Tensor,
     w2: torch.Tensor,
     topk_weights: torch.Tensor,
@@ -1176,8 +1177,10 @@ def outplace_fused_experts(
     block_shape: Optional[List[int]] = None,
     no_combine: bool = False,
 ) -> torch.Tensor:
-    return fused_experts_impl(
+    # return 
+    fused_experts_impl(
         hidden_states,
+        out_hidden_states,
         w1,
         w2,
         topk_weights,
@@ -1236,6 +1239,7 @@ direct_register_custom_op(
 
 def fused_experts(
     hidden_states: torch.Tensor,
+    out_hidden_states: torch.Tensor,
     w1: torch.Tensor,
     w2: torch.Tensor,
     topk_weights: torch.Tensor,
@@ -1282,8 +1286,10 @@ def fused_experts(
         )
         return hidden_states
     else:
-        return torch.ops.sglang.outplace_fused_experts(
+        # return 
+        torch.ops.sglang.outplace_fused_experts(
             hidden_states,
+            out_hidden_states,
             w1,
             w2,
             topk_weights,
@@ -1308,6 +1314,7 @@ def fused_experts(
 
 def fused_experts_impl(
     hidden_states: torch.Tensor,
+    out_hidden_states: torch.Tensor,
     w1: torch.Tensor,
     w2: torch.Tensor,
     topk_weights: torch.Tensor,
@@ -1404,7 +1411,9 @@ def fused_experts_impl(
     elif inplace:
         out_hidden_states = hidden_states
     else:
-        out_hidden_states = torch.empty_like(hidden_states)
+        # tmp modify (zmq)
+        # out_hidden_states = torch.empty_like(hidden_states)
+        pass
 
     for chunk in range((num_tokens // CHUNK_SIZE) + 1):
         begin_chunk_idx, end_chunk_idx = (
@@ -1526,8 +1535,8 @@ def fused_experts_impl(
                     dim=1,
                     out=out_hidden_states[begin_chunk_idx:end_chunk_idx],
                 )
-
-    return out_hidden_states
+    # (zmq) tmp modify
+    # return out_hidden_states
 
 
 def fused_moe(

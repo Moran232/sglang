@@ -1134,6 +1134,19 @@ class QKVParallelLinear(ColumnParallelLinear):
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
+class CustomAllReduce():
+    _instance = None
+    def __new__(cls, *args, **kw):
+        if cls._instance is None:
+            cls._instance = object.__new__(cls, *args, **kw)
+        return cls._instance
+    def __init__(self):
+        pass
+    def make_output_tensor(self, shape, dtype, device):
+        return torch.empty(shape, dtype=dtype, device=device)
+
+    def all_reduce(self, output_parallel):
+        return tensor_model_parallel_all_reduce(output_parallel)
 
 class RowParallelLinear(LinearBase):
     """Linear layer with row parallelism.
@@ -1224,6 +1237,8 @@ class RowParallelLinear(LinearBase):
         else:
             self.register_parameter("bias", None)
 
+        self.all_reduce_op = CustomAllReduce()
+
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         input_dim = getattr(param, "input_dim", None)
         use_bitsandbytes_4bit = getattr(param, "use_bitsandbytes_4bit", False)
@@ -1298,13 +1313,13 @@ class RowParallelLinear(LinearBase):
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
 
         # make empty tensor
-        output_parallel = torch.empty((input_.shape[0], self.output_size), dtype=input_.dtype, device=input_.device)
+        output_parallel = self.all_reduce_op.make_output_tensor((input_.shape[0], self.output_size), dtype=input_.dtype, device=input_.device)
         # do something
         # ...
         self.quant_method.apply(self, output_parallel, input_parallel, bias=bias_)
 
         if self.reduce_results and self.tp_size > 1:
-            output = tensor_model_parallel_all_reduce(output_parallel)
+            output = self.all_reduce_op.all_reduce(output_parallel)
         else:
             output = output_parallel
 

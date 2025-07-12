@@ -932,6 +932,7 @@ class Fp8MoEMethod:
         self,
         layer: torch.nn.Module,
         x: torch.Tensor,
+        out_hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
         top_k: int,
         renormalize: bool,
@@ -1007,8 +1008,10 @@ class Fp8MoEMethod:
                 use_fp8_blockscale=True,
             )
         # Expert fusion with FP8 quantization
-        return fused_experts(
+        # return 
+        fused_experts(
             x,
+            out_hidden_states,
             layer.w13_weight,
             layer.w2_weight,
             topk_weights=topk_weights,

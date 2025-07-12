@@ -259,6 +259,7 @@ class DeepseekV2MoE(nn.Module):
             topk_group=config.topk_group,
             correction_bias=self.gate.e_score_correction_bias,
             routed_scaling_factor=self.routed_scaling_factor,
+            reduce_results=True, # do all reduce in fusedmoe
             prefix=add_prefix("experts", prefix),
             **(
                 dict(deepep_mode=DeepEPMode[global_server_args_dict["deepep_mode"]])
@@ -437,13 +438,16 @@ class DeepseekV2MoE(nn.Module):
             else state.pop("hidden_states_experts_output")
         )
 
-        final_hidden_states *= self.routed_scaling_factor
+        #(zmq)  move this to fusedmoe
+        # final_hidden_states *= self.routed_scaling_factor
 
         if (s := state.pop("shared_output")) is not None:
+            print('=====>> shared not none, you should not be here when tp=16')
             final_hidden_states = final_hidden_states + s
-    
+
+        # (zmq) do all reduce in fusedmoe, skip here
         # do smoething for final_hidden_states
-        if (not self._enable_deepep_moe) and (self.tp_size > 1):
+        if False and (not self._enable_deepep_moe) and (self.tp_size > 1):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
 
         state.hidden_states_mlp_output = final_hidden_states

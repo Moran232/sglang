@@ -254,7 +254,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
 
     forward_native = forward_cuda
 
-
+from sglang.srt.layers.linear import CustomAllReduce
 class FusedMoE(torch.nn.Module):
     """FusedMoE layer for MoE models.
 
@@ -349,6 +349,7 @@ class FusedMoE(torch.nn.Module):
             params_dtype=params_dtype,
             weight_loader=self.weight_loader,
         )
+        self.all_reduce_op = CustomAllReduce()
 
     def _load_per_tensor_weight_scale(
         self,
@@ -644,9 +645,11 @@ class FusedMoE(torch.nn.Module):
         # Matrix multiply.
         # inplace modify hidden_states
         # do something for hidden_states
+        final_hidden_states = self.all_reduce_op.make_output_tensor(hidden_states.shape, dtype=hidden_states.dtype, device=hidden_states.device)
         self.quant_method.apply(
             layer=self,
             x=hidden_states,
+            out_hidden_states=final_hidden_states,
             router_logits=router_logits,
             top_k=self.top_k,
             renormalize=self.renormalize,
@@ -658,14 +661,16 @@ class FusedMoE(torch.nn.Module):
             activation=self.activation,
             apply_router_weight_on_input=self.apply_router_weight_on_input,
             routed_scaling_factor=self.routed_scaling_factor,
+            inplace = False
         )
 
         if self.reduce_results and self.tp_size > 1:
-            final_hidden_states = tensor_model_parallel_all_reduce(hidden_states)
-
-            return final_hidden_states
+            # do reduce here, mv final_hidden_states *= self.routed_scaling_factor from op_output
+            final_hidden_states *= self.routed_scaling_factor
+            output_hidden_states = self.all_reduce_op.all_reduce(final_hidden_states)
         else:
-            return hidden_states
+            output_hidden_states = final_hidden_states
+        return output_hidden_states
 
     @classmethod
     def make_expert_params_mapping(
