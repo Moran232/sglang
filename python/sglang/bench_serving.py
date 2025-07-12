@@ -656,7 +656,7 @@ def get_dataset(args, tokenizer):
             range_ratio=args.random_range_ratio,
             tokenizer=tokenizer,
             dataset_path=args.dataset_path,
-            fix_input_output=args.fix_input_output
+            fix_input_output=args.fix_input_output,
             random_sample=args.dataset_name == "random",
             return_text=not tokenize_prompt,
         )
