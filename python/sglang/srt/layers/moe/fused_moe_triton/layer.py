@@ -255,6 +255,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
     forward_native = forward_cuda
 
 from sglang.srt.layers.linear import CustomAllReduce
+from sglang.srt.distributed import get_tp_group
+
 class FusedMoE(torch.nn.Module):
     """FusedMoE layer for MoE models.
 
@@ -349,7 +351,7 @@ class FusedMoE(torch.nn.Module):
             params_dtype=params_dtype,
             weight_loader=self.weight_loader,
         )
-        self.all_reduce_op = CustomAllReduce()
+        self.all_reduce_op = CustomAllReduce(group=get_tp_group().device_group)
 
     def _load_per_tensor_weight_scale(
         self,

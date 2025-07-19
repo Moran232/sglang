@@ -30,7 +30,9 @@ from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
 )
-from sglang.srt.utils import set_weight_attrs
+from sglang.srt.utils import (
+    set_weight_attrs,
+    log_info_on_rank0)
 
 logger = logging.getLogger(__name__)
 
@@ -1134,19 +1136,101 @@ class QKVParallelLinear(ColumnParallelLinear):
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
-class CustomAllReduce():
+from sglang.srt.distributed import get_tp_group
+
+import torch.distributed as dist
+import os
+from typing import Optional, Tuple
+
+import deep_ep
+
+class CustomAllReduce:
     _instance = None
-    def __new__(cls, *args, **kw):
+
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = object.__new__(cls, *args, **kw)
+            cls._instance = super(CustomAllReduce, cls).__new__(cls)
         return cls._instance
-    def __init__(self):
-        pass
+
+    def __init__(
+        self,
+        group: dist.ProcessGroup,
+        max_num_tokens: int = 8,
+        hidden_dim: int = 7168,
+        num_experts: int = 16,
+        dtype: torch.dtype = torch.bfloat16,
+        low_latency_mode: bool = True,
+        force_reinit: bool = False,
+    ):
+
+        if hasattr(self, "initialized") and not force_reinit:
+            return
+
+        self.group = group
+        self.rank = dist.get_rank(group=self.group)
+        self.world_size = dist.get_world_size(group=self.group)
+
+        self.max_num_tokens = max_num_tokens
+        self.hidden_dim = hidden_dim
+        self.dtype = dtype
+        self.low_latency_mode = low_latency_mode
+
+        log_info_on_rank0(logger=logger, 
+                          msg=f"rank={self.rank}  world_size={self.world_size}")
+
+        size_of_type = 2  #
+        send_recv = 2  # 
+        self.num_rdma_bytes = 128 + send_recv * (self.max_num_tokens * self.hidden_dim * size_of_type)
+
+        log_info_on_rank0(logger=logger, 
+                          msg=f"Allocating buffer size: {self.num_rdma_bytes / 1e6:.2f} MB")
+
+        # print(self.group, self.num_rdma_bytes, low_latency_mode, num_experts, self.world_size)
+        self.buffer = deep_ep.Buffer(
+            group=self.group,
+            num_rdma_bytes=self.num_rdma_bytes,
+            low_latency_mode=low_latency_mode,
+            num_qps_per_rank=num_experts // self.world_size,
+        )
+        log_info_on_rank0(logger=logger, msg="Buffer initialized")
+        buf = self.buffer.runtime.get_local_buffer_tensor(torch.int32, 0, True)
+        buf.zero_()
+
+        log_info_on_rank0(logger=logger, msg="Buffer zeroed")
+        pid = os.getpid()
+        pids = [None] * self.world_size
+        dist.all_gather_object(pids, pid, group=self.group)
+        log_info_on_rank0(logger=logger, msg=f"Gathered PIDs: {pids}")
+
+        offset = self.rank // 8 * 8
+        local_rank = self.rank % 8
+        local_pids = pids[offset : offset + 8]
+        log_info_on_rank0(logger=logger, msg=f"offset={offset} local_pids={local_pids}")
+
+        self.buffer.runtime.sync_nvls(local_pids)
+        dist.barrier(device_ids=[local_rank])
+        log_info_on_rank0(logger=logger, msg=f"Buffer synced with local PIDs: {local_pids}")
+
+        self.x_nvls_buffer = self.buffer.runtime.get_nvls_buffer_tensor(dtype, 0, False)
+        self.initialized = True
+        log_info_on_rank0(logger=logger, msg="CustomAllReduce initialized")
+
     def make_output_tensor(self, shape, dtype, device):
-        return torch.empty(shape, dtype=dtype, device=device)
+        num_tokens, hidden_dim = shape[:]
+        total_ele = num_tokens * hidden_dim
+        if num_tokens > self.max_num_tokens:
+            return torch.empty(shape, dtype=dtype, device=device)
+        else:
+            return self.x_nvls_buffer[:total_ele].reshape(num_tokens, hidden_dim)
 
     def all_reduce(self, output_parallel):
-        return tensor_model_parallel_all_reduce(output_parallel)
+        num_tokens, _ = output_parallel.shape[:]
+        if num_tokens > self.max_num_tokens:
+            return tensor_model_parallel_all_reduce(output_parallel)
+        else:
+            # log_info_on_rank0(logger=logger, msg="use low latency all reduce")
+            self.buffer.runtime.low_latency_reduce_(output_parallel)
+            return output_parallel
 
 class RowParallelLinear(LinearBase):
     """Linear layer with row parallelism.
@@ -1237,7 +1321,7 @@ class RowParallelLinear(LinearBase):
         else:
             self.register_parameter("bias", None)
 
-        self.all_reduce_op = CustomAllReduce()
+        self.all_reduce_op = CustomAllReduce(group=get_tp_group().device_group)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         input_dim = getattr(param, "input_dim", None)
