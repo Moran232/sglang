@@ -546,9 +546,17 @@ if __name__ == "__main__":
     ServerArgs.add_cli_args(parser)
     BenchArgs.add_cli_args(parser)
     args = parser.parse_args()
+
+    # for debug
+    args.tp_size =2
+    args.model_path='deepseek-ai/DeepSeek-R1'
+    args.disable_cuda_graph=True
+    args.trust_remote_code=True
+    args.json_model_override_args='{"num_hidden_layers":2}'
+
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
-
+    
     logging.basicConfig(
         level=getattr(logging, server_args.log_level.upper()),
         format="%(message)s",

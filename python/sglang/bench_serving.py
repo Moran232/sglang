@@ -513,6 +513,16 @@ def get_dataset(args, tokenizer):
             dataset_path=args.dataset_path,
             fix_input_output=args.fix_input_output
         )
+    elif args.dataset_name.startswith("generate"):
+        input_requests = generate_fixed_requests(
+            input_len=args.random_input_len,
+            output_len=args.random_output_len,
+            num_prompts=args.num_prompts,
+            range_ratio=args.random_range_ratio,
+            tokenizer=tokenizer,
+            dataset_path=args.dataset_path,
+            fix_input_output=args.fix_input_output
+        )
     elif args.dataset_name == "generated-shared-prefix":
         input_requests = sample_generated_shared_prefix_requests(
             num_groups=args.gsp_num_groups,
@@ -874,12 +884,9 @@ def sample_sharegpt_requests(
             # Prune too long sequences.
             continue
 
-            
         # tmp modify: to get 1k 1k data.
-        if prompt_len < 1000 or prompt_len > 1048:
-            continue 
-        if output_len < 800 or output_len > 1048:
-            print(output_len)
+        if prompt_len < 1000 or prompt_len > 1048 or output_len < 800 or output_len > 1048:
+            print(f'filter: {prompt_len} {output_len}')
             continue
         print(prompt_len, output_len, context_len)
         filtered_dataset.append((prompt, prompt_len, output_len))
@@ -992,12 +999,55 @@ def sample_random_requests(
                     output_len=int(output_lens[i]),
                 )
             )
-
+    print(f"##################################")
+    print(f"#Prompt: {input_requests[0].prompt}")
+    print(f"##################################")
     print(f"#Input tokens: {np.sum(input_lens)}")
     print(f"#Output tokens: {np.sum(output_lens)}")
     # print(f"#input requests: {input_requests}")
     return input_requests
 
+def generate_fixed_requests(
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    range_ratio: float,
+    tokenizer: PreTrainedTokenizerBase,
+    dataset_path: str,
+    random_sample: bool = True,
+    return_text: bool = True,
+    fix_input_output:bool=True
+) -> List[Tuple[str, int, int]]:
+    assert num_prompts == 1, f'only support num_prompts==1'
+    input_lens=np.full(num_prompts, input_len)
+    output_lens=np.full(num_prompts, output_len)
+    
+    print(f"#Generate input_lens={input_lens} output_lens={output_lens}")
+    prompt = "你是一个法律助手，专注于为用户提供准确、专业且易于理解的法律咨询，你熟悉中国现行的法律法规体系，包括但不限于宪法、民法典、刑法、行政法、经济法等，能够针对婚姻家庭、合同纠纷、劳动争议、知识产权、公司治理、侵权责任、刑事辩护等常见法律问题提供切实可行的解决方案，你在分析案件时始终坚持依法办事的原则，尊重事实依据和法律条文，注重保护当事人的合法权益，同时遵守律师职业道德和执业纪律，确保所提供的建议符合法律规范和社会公序良俗，你具备良好的逻辑思维能力和语言表达能力，能够清晰地解释复杂的法律概念和程序流程，帮助用户理解自身权利义务，引导其通过合法途径解决矛盾纠纷，无论是起草合同、审查法律文件，还是提供诉讼策略建议，你都能以严谨的态度和专业的知识为用户保驾护航，你还关注最新的司法解释、典型案例和立法动态，及时更新自己的知识库，确保所提供的法律意见具有时效性和权威性，你理解用户在面对法律问题时可能产生的焦虑与困惑，因此在沟通中始终保持耐心、同理心和专业性，力求让用户感受到安心与信任，你不会替代律师的角色，而是作为用户的初步法律指引者，帮助其判断是否需要进一步寻求专业律师的帮助，并为其提供相应的建议方向，你尊重每一位用户的隐私权，对所有咨询内容严格保密，绝不泄露任何个人信息或案件细节，你的目标是普及法律知识，提升公众的法治意识，让每个人都能平等地获得法律支持，无论问题大小，你都会认真对待，尽最大努力提供有价值的帮助，你清楚自己的职责边界，不会对尚未生效的法律条文或存在重大争议的法律问题做出绝对化判断，而是客观陈述不同观点和可能的司法实践倾向，你鼓励用户积极学法、守法、用法，共同维护社会的公平正义与和谐稳定，你始终坚持以人民为中心的服务理念，把用户的合法诉求放在首位，努力成为值得信赖的法律智囊。我与配偶张某于2018年5月登记结婚，婚后初期感情尚可，共同居住在北京市朝阳区某小区房产中，该房产为我婚前个人出资首付并办理按揭贷款购买，登记在我个人名下，婚后双方共同还贷。2020年，张某父母全额出资为其购置位于海淀区的一套房产，登记在张某名下，作为其个人财产。自2021年起，双方因性格不合、育儿观念差异及经济问题频繁争吵，张某多次在争执中对我进行言语侮辱，甚至有一次推搡导致我轻微受伤，我已保留医院诊断记录和报警回执。2023年初，我因工作调动至上海分公司，双方开始分居，孩子（2019年出生）随我生活，张某未按时支付抚养费，仅在亲属劝说下偶尔转账。2023年10月，我发现张某与同事存在不正当男女关系，有微信聊天记录和照片为证，遂提出离婚协商，但张某同意离婚却要求分割我名下朝阳区房产的增值部分及还贷补偿，同时要求获得孩子抚养权并让我支付海淀区房产的“共同装修费用”补偿。我不同意其要求，认为其存在婚内过错且未尽抚养义务。2024年3月，我正式向朝阳区法院提起离婚诉讼，诉讼请求包括：判决离婚、孩子由我抚养、张某支付拖欠及未来抚养费、依法分割夫妻共同财产、确认海淀区房产为张某个人财产、我获得朝阳区房产全部所有权并给予张某适当补偿。张某提出反诉，主张孩子应由其抚养（称我长期在外地工作无法照顾），要求我补偿其对朝阳区房产还贷及增值部分的一半，同时要求我分担海淀区房产装修费用50万元。案件审理中，双方对房产分割、抚养权归属、抚养费计算、过错赔偿等产生激烈争议。我方主张依据《民法典》第1087条照顾子女、女方和无过错方权益，且我长期抚养孩子，生活环境稳定，应优先考虑孩子利益；张某存在婚内与他人同居的过错，依据第1091条应少分财产；朝阳区房产为我婚前购买，婚后还贷部分及增值应合理补偿但非平分；其主张的装修费用无合同和支付凭证，不应支持。张某方则强调共同还贷属于共同财产投入，应平分增值；其收入稳定、父母可协助照看，更适合抚养孩子；装修费用虽无正式票据但实际发生，应酌情补偿。现法院要求双方补充证据，包括收入证明、房产评估报告、孩子意愿（若年满八周岁）等。请问在此情形下，法院对房产分割、孩子抚养权、抚养费及过错赔偿的判决可能如何认定？我应补充哪些关键证据以支持诉求？张某的婚内出轨行为能否构成“重大过错”并影响财产分割比例？若孩子目前未满八周岁，其抚养环境的稳定性在判决中占多大权重？请求您结合《民法典》及相关司法解释，进行全面法律分析并提供应诉策略建议。"
+    prompt_token_ids = tokenizer.encode(prompt)
+    prompt_len = len(prompt_token_ids)
+    print(prompt_len)
+    input_ids = prompt_token_ids[: input_lens[0]]
+    
+    input_content = input_ids
+    if return_text:
+        input_content = tokenizer.decode(input_content)
+    input_requests: List[DatasetRow] = []
+    input_requests.append(
+                DatasetRow(
+                    prompt=input_content,
+                    prompt_len=int(input_lens[0]),
+                    output_len=int(output_lens[0]),
+                )
+            )
+
+    print(f"##################################")
+    print(f"#Prompt: {input_requests[0].prompt}")
+    print(f"##################################")
+    print(f"#Input tokens: {np.sum(input_lens)}")
+    print(f"#Output tokens: {np.sum(output_lens)}")
+    # print(f"#input requests: {input_requests}")
+    return input_requests
 
 def gen_prompt(tokenizer, token_num):
     """Generate a random prompt of specified token length using tokenizer vocabulary."""
@@ -1139,6 +1189,7 @@ def calculate_metrics(
             retokenized_output_len = len(
                 tokenizer.encode(outputs[i].generated_text, add_special_tokens=False)
             )
+            print(outputs[i].generated_text)
             retokenized_output_lens.append(retokenized_output_len)
             total_input += input_requests[i].prompt_len
             if output_len > 1:
@@ -1718,7 +1769,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "random", "random-ids", "generated-shared-prefix", "mmmu"],
+        choices=["sharegpt", "random", "random-ids", "generated-shared-prefix", "mmmu","generate"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
