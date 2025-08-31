@@ -42,6 +42,8 @@ from sglang.srt.utils import (
     next_power_of_2,
     round_up,
 )
+from sglang.srt.layers.linear import CustomDeepEpAllReduce
+from sglang.srt.distributed import get_tp_group
 
 if is_flashinfer_available():
     from flashinfer import (
@@ -151,6 +153,11 @@ class FusedMoE(torch.nn.Module):
         self.num_fused_shared_experts = num_fused_shared_experts
         self.expert_map_cpu = None
         self.expert_map_gpu = None
+        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
+            logger.info("use DEEPEP_ALLREDUCE, set inplace=False, reduce results=True")
+            inplace = False
+            reduce_results = True
+            self.all_reduce_op = CustomDeepEpAllReduce(group=get_tp_group().device_group)
 
         self.moe_runner_config = MoeRunnerConfig(
             activation=activation,
@@ -809,6 +816,24 @@ class FusedMoE(torch.nn.Module):
                 raise NotImplementedError()
 
         # Matrix multiply.
+        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
+            with use_symmetric_memory(get_tp_group()) as sm:
+                final_hidden_states = self.all_reduce_op.make_output_tensor(
+                    hidden_states.shape,
+                    dtype=hidden_states.dtype,
+                    device=hidden_states.device)
+                self.quant_method.apply_inplace(
+                    layer=self,
+                    output=final_hidden_states,
+                    x=hidden_states,
+                    topk_output=topk_output,
+                    moe_runner_config=self.moe_runner_config,
+                    )
+                sm.tag(final_hidden_states)
+            if self.reduce_results and (self.moe_tp_size > 1 or self.moe_ep_size > 1):
+                final_hidden_states = self.all_reduce_op.all_reduce(final_hidden_states)
+            return final_hidden_states
+
         with use_symmetric_memory(get_tp_group()) as sm:
 
             final_hidden_states = self.quant_method.apply(

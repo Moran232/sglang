@@ -25,6 +25,8 @@ from sglang.srt.layers.quantization.fp8_kernel import (
     triton_scaled_mm,
     w8a8_block_fp8_matmul_deepgemm,
     w8a8_block_fp8_matmul_triton,
+    w8a8_block_fp8_matmul_deepgemm_inplace,
+    w8a8_block_fp8_matmul_triton_inplace,
 )
 from sglang.srt.utils import (
     align,
@@ -149,6 +151,95 @@ def dispatch_w8a8_block_fp8_linear() -> Callable:
     else:
         return triton_w8a8_block_fp8_linear
 
+# NOTE(moran):support inplace matmul for deepep all reduce
+def dispatch_w8a8_block_fp8_linear_inplace() -> Callable:
+    if ENABLE_FLASHINFER_GEMM:
+        raise RuntimeError("not impl inplace flashinfer gemm")
+        # return flashinfer_gemm_w8a8_block_fp8_linear_inplace
+    elif CUTLASS_BLOCK_FP8_SUPPORTED:
+        return cutlass_w8a8_block_fp8_linear_with_fallback_inplace
+    elif _use_aiter:
+        raise RuntimeError("not impl inplace aiter gemm")
+        # return aiter_w8a8_block_fp8_linear
+    elif deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
+        return deepgemm_w8a8_block_fp8_linear_with_fallback_inplace
+    else:
+        return triton_w8a8_block_fp8_linear_inplace
+
+def deepgemm_w8a8_block_fp8_linear_with_fallback_inplace(
+    output: torch.Tensor,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: List[int],
+    weight_scale: torch.Tensor,
+    input_scale: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    assert input_scale is None
+
+    output_dtype = input.dtype
+    dtype_supported = output_dtype == torch.bfloat16
+
+    # TODO: https://github.com/sgl-project/sglang/pull/6890#issuecomment-2943395737
+    shape_supported = weight.shape[0] % 64 == 0 and weight.shape[1] % 128 == 0
+
+    if not (shape_supported and dtype_supported):
+        # fall back to triton
+        return triton_w8a8_block_fp8_linear_inplace(
+            output, input, weight, block_size, weight_scale, input_scale, bias
+        )
+
+    input_2d = input.view(-1, input.shape[-1])
+    output_shape = [*input.shape[:-1], weight.shape[0]]
+
+    q_input, x_scale = sglang_per_token_group_quant_fp8(
+        input_2d,
+        block_size[1],
+        column_major_scales=True,
+        scale_tma_aligned=True,
+        scale_ue8m0=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
+    )
+
+    w8a8_block_fp8_matmul_deepgemm_inplace(
+        output, q_input, weight, x_scale, weight_scale, block_size, output_dtype=output_dtype
+    )
+    if bias is not None:
+        output += bias
+    output = output.to(dtype=output_dtype).view(*output_shape)
+
+def cutlass_w8a8_block_fp8_linear_with_fallback_inplace(
+    output: torch.Tensor,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: List[int],
+    weight_scale: torch.Tensor,
+    input_scale: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    raise RuntimeError("not impl yet")
+
+def triton_w8a8_block_fp8_linear_inplace(
+    output: torch.Tensor,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: List[int],
+    weight_scale: torch.Tensor,
+    input_scale: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    assert input_scale is None
+    input_2d = input.view(-1, input.shape[-1])
+    output_shape = [*input.shape[:-1], weight.shape[0]]
+
+    q_input, x_scale = per_token_group_quant_fp8(
+        input_2d, block_size[1], column_major_scales=False
+    )
+    w8a8_block_fp8_matmul_triton_inplace(
+        output, q_input, weight, x_scale, weight_scale, block_size, output_dtype=input_2d.dtype
+    )
+    if bias is not None:
+        output += bias
+    output = output.to(dtype=input_2d.dtype).view(*output_shape)
 
 def flashinfer_gemm_w8a8_block_fp8_linear(
     input: torch.Tensor,

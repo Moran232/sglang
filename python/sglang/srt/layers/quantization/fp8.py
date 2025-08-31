@@ -52,6 +52,7 @@ from sglang.srt.layers.quantization.fp8_utils import (
     can_auto_enable_marlin_fp8,
     cutlass_fp8_supported,
     dispatch_w8a8_block_fp8_linear,
+    dispatch_w8a8_block_fp8_linear_inplace,
     input_to_float8,
     normalize_e4m3fn_to_e4m3fnuz,
 )
@@ -220,6 +221,7 @@ class Fp8LinearMethod(LinearMethodBase):
         self.block_quant = self.quant_config.weight_block_size is not None
 
         self.w8a8_block_fp8_linear = dispatch_w8a8_block_fp8_linear()
+        self.w8a8_block_fp8_linear_inplcae = dispatch_w8a8_block_fp8_linear_inplace()
 
     def create_weights(
         self,
@@ -486,7 +488,27 @@ class Fp8LinearMethod(LinearMethodBase):
             cutlass_fp8_supported=self.cutlass_fp8_supported,
             use_per_token_if_dynamic=False,
         )
-
+    # NOTE(moran): for deepep allreduce
+    def apply_inplace( 
+        self,
+        layer: torch.nn.Module,
+        output: torch.Tensor,
+        x: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.block_quant:
+            self.w8a8_block_fp8_linear_inplcae(
+                output=output,
+                input=x,
+                weight=layer.weight,
+                block_size=self.quant_config.weight_block_size,
+                weight_scale=layer.weight_scale_inv,
+                input_scale=None,
+                bias=bias,
+            )
+            return
+        else:
+            raise RuntimeError(f'inplace fp8 linear only support block_quant')
 
 def get_tile_tokens_dim(num_tokens, top_k, num_experts):
     # Guess tokens per expert assuming perfect expert distribution first.
@@ -983,6 +1005,45 @@ class Fp8MoEMethod(FusedMoEMethodBase):
                 requires_grad=False,
             )
             torch.cuda.empty_cache()
+    
+    # NOTE(moran):for deepep all reduce
+    def apply_inplace(
+        self,
+        layer: torch.nn.Module,
+        output: torch.Tensor,
+        x: torch.Tensor,
+        topk_output: TopKOutput,
+        moe_runner_config: MoeRunnerConfig,
+    ) -> torch.Tensor:
+        from sglang.srt.layers.moe.fused_moe_triton.fused_moe import fused_experts_with_output
+
+        if self.use_cutlass_fused_experts_fp8:
+            from sglang.srt.layers.moe.cutlass_moe import cutlass_fused_experts_fp8
+
+            topk_weights, topk_ids, _ = topk_output
+            raise RuntimeError("not impl cutlass inplace fused experts fp8")
+
+        # Expert fusion with FP8 quantization
+        fused_experts_with_output(
+            output,
+            x,
+            layer.w13_weight,
+            layer.w2_weight,
+            topk_output=topk_output,
+            moe_runner_config=moe_runner_config,
+            use_fp8_w8a8=True,
+            w1_scale=(
+                layer.w13_weight_scale_inv
+                if self.block_quant
+                else layer.w13_weight_scale
+            ),
+            w2_scale=(
+                layer.w2_weight_scale_inv if self.block_quant else layer.w2_weight_scale
+            ),
+            a1_scale=layer.w13_input_scale,
+            a2_scale=layer.w2_input_scale,
+            block_shape=self.quant_config.weight_block_size,
+        )
 
     def apply(
         self,

@@ -31,7 +31,13 @@ from sglang.srt.layers.parameter import (
     _ColumnvLLMParameter,
 )
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
-from sglang.srt.utils import is_cpu, is_npu, set_weight_attrs
+from sglang.srt.utils import is_cpu, is_npu, set_weight_attrs, log_info_on_rank0
+from sglang.srt.distributed import get_tp_group
+from sglang.srt.utils import get_bool_env_var, get_int_env_var
+
+import torch.distributed as dist
+import os
+import deep_ep
 
 if TYPE_CHECKING:
     from sglang.srt.layers.quantization.base_config import (
@@ -221,6 +227,7 @@ class ReplicatedLinear(LinearBase):
             )
         else:
             self.register_parameter("bias", None)
+        self.prefix = prefix
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         # If the weight on disk does not have a shape, give it one
@@ -1143,6 +1150,99 @@ class QKVParallelLinear(ColumnParallelLinear):
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
+class CustomDeepEpAllReduce:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(CustomDeepEpAllReduce, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(
+        self,
+        group: dist.ProcessGroup,
+        hidden_dim: int = 7168,
+        num_experts: int = 16,
+        dtype: torch.dtype = torch.bfloat16,
+        low_latency_mode: bool = True,
+        force_reinit: bool = False,
+    ):
+        if hasattr(self, "initialized") and not force_reinit:
+            return
+
+        self.group = group
+        self.rank = dist.get_rank(group=self.group)
+        self.world_size = dist.get_world_size(group=self.group)
+
+        # NOTE(moran): this should be modified when use other models(for dsR1, head_dim=7168).
+        self.max_num_tokens = get_int_env_var("DEEPEP_ALLREDUCE_MAX_TOKENS", 8)
+        self.hidden_dim = hidden_dim
+        self.dtype = dtype
+        self.low_latency_mode = low_latency_mode
+
+        log_info_on_rank0(logger=logger, 
+                          msg=f"rank={self.rank}  world_size={self.world_size}")
+        if self.world_size == 1 or self.max_num_tokens < 1:
+            log_info_on_rank0(logger=logger,
+                              msg=f'tp=1 or ALLREDUCE_MAX_TOKENS=0, stop initialization of deepep')
+            self.initialized = True
+            return
+
+        size_of_type = 2  #
+        send_recv = 2  # 
+        self.num_rdma_bytes = 128 + send_recv * (self.max_num_tokens * self.hidden_dim * size_of_type)
+
+        log_info_on_rank0(logger=logger, 
+                          msg=f"Allocating buffer size: {self.num_rdma_bytes / 1e6:.2f} MB")
+
+        # print(self.group, self.num_rdma_bytes, low_latency_mode, num_experts, self.world_size)
+        self.buffer = deep_ep.Buffer(
+            group=self.group,
+            num_rdma_bytes=self.num_rdma_bytes,
+            low_latency_mode=low_latency_mode,
+            num_qps_per_rank=num_experts // self.world_size,
+        )
+        log_info_on_rank0(logger=logger, msg="Buffer initialized")
+        buf = self.buffer.runtime.get_local_buffer_tensor(torch.int32, 0, True)
+        buf.zero_()
+
+        log_info_on_rank0(logger=logger, msg="Buffer zeroed")
+        pid = os.getpid()
+        pids = [None] * self.world_size
+        dist.all_gather_object(pids, pid, group=self.group)
+        log_info_on_rank0(logger=logger, msg=f"Gathered PIDs: {pids}")
+
+        offset = self.rank // 8 * 8
+        local_rank = self.rank % 8
+        local_pids = pids[offset : offset + 8]
+        log_info_on_rank0(logger=logger, msg=f"offset={offset} local_pids={local_pids}")
+        
+        log_info_on_rank0(logger=logger, msg=f'Start nvls sync...')
+        self.buffer.runtime.sync_nvls(local_pids)
+        dist.barrier(device_ids=[local_rank])
+        log_info_on_rank0(logger=logger, msg=f"Buffer synced with local PIDs: {local_pids}")
+
+        log_info_on_rank0(logger=logger, msg=f'Get nvls buffer tensor.')
+        self.x_nvls_buffer = self.buffer.runtime.get_nvls_buffer_tensor(dtype, 0, False)
+        self.initialized = True
+        log_info_on_rank0(logger=logger, msg="CustomDeepEpAllReduce initialized")
+
+    def make_output_tensor(self, shape, dtype, device):
+        num_tokens, hidden_dim = shape[:]
+        total_ele = num_tokens * hidden_dim
+        if num_tokens > self.max_num_tokens:
+            return torch.empty(shape, dtype=dtype, device=device)
+        else:
+            return self.x_nvls_buffer[:total_ele].reshape(num_tokens, hidden_dim)
+
+    def all_reduce(self, output_parallel):
+        num_tokens, _ = output_parallel.shape[:]
+        if num_tokens > self.max_num_tokens:
+            return tensor_model_parallel_all_reduce(output_parallel)
+        else:
+            # log_info_on_rank0(logger=logger, msg="use low latency all reduce")
+            self.buffer.runtime.low_latency_reduce_(output_parallel)
+            return output_parallel
 
 class RowParallelLinear(LinearBase):
     """Linear layer with row parallelism.
@@ -1227,6 +1327,9 @@ class RowParallelLinear(LinearBase):
             )
         else:
             self.register_parameter("bias", None)
+        self.prefix = prefix
+        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
+            self.all_reduce_op = CustomDeepEpAllReduce(group=get_tp_group().device_group)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         input_dim = getattr(param, "input_dim", None)
@@ -1315,6 +1418,24 @@ class RowParallelLinear(LinearBase):
         # Only fuse bias add into GEMM for rank 0 (this ensures that
         # bias will not get added more than once in TP>1 case)
         bias_ = None if (self.tp_rank > 0 or self.skip_bias_add) else self.bias
+
+        # NOTE(moran): support deepep all reduce
+        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
+            # make empty tensor
+            output_parallel = self.all_reduce_op.make_output_tensor(
+                (input_.shape[0], self.output_size), 
+                dtype=input_.dtype, device=input_.device)
+            # do something
+            with use_symmetric_memory(parallel_state.get_tp_group()) as sm:
+                self.quant_method.apply_inplace(self, output_parallel, input_parallel, bias=bias_)
+                sm.tag(output_parallel)
+            if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
+                output = self.all_reduce_op.all_reduce(output_parallel)
+            else:
+                output = output_parallel
+            output_bias = self.bias if self.skip_bias_add else None
+            return output, output_bias
+
         with use_symmetric_memory(parallel_state.get_tp_group()) as sm:
             output_parallel = self.quant_method.apply(self, input_parallel, bias=bias_)
             sm.tag(output_parallel)

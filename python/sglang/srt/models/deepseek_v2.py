@@ -530,6 +530,8 @@ class DeepseekV2MoE(nn.Module):
             and not should_allreduce_fusion
             and not use_reduce_scatter
             and not should_use_flashinfer_cutlass_moe_fp4_allgather()
+            #NOTE(moran): do reduce in Fusedmoe when use deepep all reduce
+            and not get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE")
         ):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
         return final_hidden_states
@@ -1883,6 +1885,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
         )
+
         hidden_states = self.mlp(
             hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
         )

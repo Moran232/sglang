@@ -1017,6 +1017,25 @@ def prepare_block_fp8_matmul_inputs(
     return M, N, K, C
 
 
+def w8a8_block_fp8_matmul_deepgemm_inplace(
+    C: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    As: torch.Tensor,
+    Bs: torch.Tensor,
+    block_size: List[int],
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    M, N, K, _ = prepare_block_fp8_matmul_inputs(A, B, As, Bs, block_size, output_dtype)
+
+    # Deepgemm only supports output tensor type as bfloat16
+    assert C.dtype == torch.bfloat16 and deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
+
+    if supports_custom_op():
+        torch.ops.sglang.deep_gemm_fp8_fp8_bf16_nt(A, As, B, Bs, C)
+    else:
+        deep_gemm_wrapper.gemm_nt_f8f8bf16((A, As), (B, Bs), C)
+
 def w8a8_block_fp8_matmul_deepgemm(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -1037,6 +1056,84 @@ def w8a8_block_fp8_matmul_deepgemm(
 
     return C
 
+def w8a8_block_fp8_matmul_triton_inplace(
+    C: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    As: torch.Tensor,
+    Bs: torch.Tensor,
+    block_size: List[int],
+    output_dtype: torch.dtype = torch.float16,
+) -> torch.Tensor:
+    """This function performs matrix multiplication with block-wise quantization.
+
+    It takes two input tensors `A` and `B` with scales `As` and `Bs`.
+    The output is returned in the specified `output_dtype`.
+
+    Args:
+        A: The input tensor, e.g., activation.
+        B: The input tensor, e.g., weight.
+        As: The per-token-group quantization scale for `A`.
+        Bs: The per-block quantization scale for `B`.
+        block_size: The block size for per-block quantization. It should be 2-dim, e.g., [128, 128].
+        output_dytpe: The dtype of the returned tensor.
+
+    Returns:
+        torch.Tensor: The result of matmul.
+    """
+
+    M, N, K, C_ = prepare_block_fp8_matmul_inputs(A, B, As, Bs, block_size, output_dtype)
+    assert C.shape == C_.shape, 'C shape error in matmul tirton inplace impl'
+
+    block_n, block_k = block_size
+
+    configs = get_w8a8_block_fp8_configs(N, K, block_size[0], block_size[1])
+    if configs:
+        # If an optimal configuration map has been found, look up the
+        # optimal config
+        config = configs[min(configs.keys(), key=lambda x: abs(x - M))]
+    else:
+        # Default config
+        # Block-wise quant: BLOCK_SIZE_K must be divisible by block_size[1]
+        config = {
+            "BLOCK_SIZE_M": 64,
+            "BLOCK_SIZE_N": block_size[0],
+            "BLOCK_SIZE_K": block_size[1],
+            "GROUP_SIZE_M": 32,
+            "num_warps": 4,
+            "num_stages": 3,
+        }
+
+    def grid(META):
+        return (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+
+    kernel = select_w8a8_block_fp8_matmul_kernel(M, N, config)
+
+    kernel[grid](
+        A,
+        B,
+        C,
+        As,
+        Bs,
+        M,
+        N,
+        K,
+        block_n,
+        block_k,
+        A.stride(-2),
+        A.stride(-1),
+        B.stride(1),
+        B.stride(0),
+        C.stride(-2),
+        C.stride(-1),
+        As.stride(-2),
+        As.stride(-1),
+        Bs.stride(1),
+        Bs.stride(0),
+        **config,
+    )
 
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
