@@ -1329,6 +1329,7 @@ class RowParallelLinear(LinearBase):
             self.register_parameter("bias", None)
         self.prefix = prefix
         if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
+            log_info_on_rank0(logger=logger, msg="use DEEPEP_ALLREDUCE in RowParellelLiner, reduce_result=True")
             self.all_reduce_op = CustomDeepEpAllReduce(group=get_tp_group().device_group)
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
@@ -1429,6 +1430,7 @@ class RowParallelLinear(LinearBase):
             with use_symmetric_memory(parallel_state.get_tp_group()) as sm:
                 self.quant_method.apply_inplace(self, output_parallel, input_parallel, bias=bias_)
                 sm.tag(output_parallel)
+
             if self.reduce_results and self.tp_size > 1 and not skip_all_reduce:
                 output = self.all_reduce_op.all_reduce(output_parallel)
             else:

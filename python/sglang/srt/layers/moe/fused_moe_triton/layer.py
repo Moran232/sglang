@@ -41,6 +41,7 @@ from sglang.srt.utils import (
     is_hip,
     next_power_of_2,
     round_up,
+    log_info_on_rank0
 )
 from sglang.srt.layers.linear import CustomDeepEpAllReduce
 from sglang.srt.distributed import get_tp_group
@@ -154,7 +155,7 @@ class FusedMoE(torch.nn.Module):
         self.expert_map_cpu = None
         self.expert_map_gpu = None
         if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE"):
-            logger.info("use DEEPEP_ALLREDUCE, set inplace=False, reduce results=True")
+            log_info_on_rank0(logger=logger, msg="use DEEPEP_ALLREDUCE in FusedMoe, inplace=False, reduce_results=True")
             inplace = False
             reduce_results = True
             self.all_reduce_op = CustomDeepEpAllReduce(group=get_tp_group().device_group)
