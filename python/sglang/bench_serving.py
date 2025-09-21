@@ -707,6 +707,10 @@ def get_dataset(args, tokenizer):
             apply_chat_template=args.apply_chat_template,
             random_sample=True,
         )
+    elif args.dataset_name == 'benchmark50':
+        input_requests = benchmark_50_requests(
+            tokenizer=tokenizer,
+        )
     else:
         raise ValueError(f"Unknown dataset: {args.dataset_name}")
     return input_requests
@@ -1073,6 +1077,35 @@ def sample_HLE_requeset(
     print(f"#Input tokens: {np.sum([x[1] for x in filtered_dataset])}")
     print(f"#Output tokens: {np.sum([x[2] for x in filtered_dataset])}")
     return filtered_dataset
+def benchmark_50_requests(
+    tokenizer: PreTrainedTokenizerBase,
+):
+    all_input_requests = []
+    for i in range(0, 200, 40):
+        loaded_prompts=[]
+        data_file = f'python/sglang/benchmark_data/benchmark_40_{i}.jsonl'
+        with open(data_file, 'r') as file:
+            for line in file:
+                data = json.loads(line.strip())
+                loaded_prompts.append(data['prompt'])
+
+        input_requests: List[DatasetRow] = []
+        for prompt in loaded_prompts:
+            prompt_token_ids = tokenizer.encode(prompt)
+            prompt_token_ids = prompt_token_ids[:1024]
+            assert len(prompt_token_ids) == 1024, f'prompt_token_ids len {len(prompt_token_ids)}'
+
+            input_requests.append(
+                    DatasetRow(
+                        prompt=prompt,
+                        prompt_len=len(prompt_token_ids),
+                        output_len=1024,
+                    )
+            )
+        print(f"#Input tokens: {len(loaded_prompts) * 1024}")
+        all_input_requests.append(input_requests)
+
+    return all_input_requests
 
 def sample_random_requests(
     input_len: int,
@@ -1996,6 +2029,36 @@ def run_benchmark(args_: argparse.Namespace):
     if not hasattr(args, "flush_cache"):
         args.flush_cache = False
 
+    if args.dataset_name == "benchmark50":
+        all_res = {}
+        for idx, input_reqs in enumerate(input_requests):
+            print(f"================== benchmark dataset {idx} =====================")
+            res = asyncio.run(
+                        benchmark(
+                            backend=backend,
+                            api_url=api_url,
+                            base_url=base_url,
+                            model_id=model_id,
+                            tokenizer=tokenizer,
+                            input_requests=input_reqs,
+                            request_rate=args.request_rate,
+                            max_concurrency=args.max_concurrency,
+                            disable_tqdm=args.disable_tqdm,
+                            lora_names=args.lora_name,
+                            extra_request_body=extra_request_body,
+                            profile=args.profile,
+                            pd_separated=args.pd_separated,
+                            flush_cache=args.flush_cache,
+                            warmup_requests=args.warmup_requests,
+                        )
+                    )
+            all_res[idx] = {"accept_len": res["accept_length"], "output tks": res["output_throughput"]}
+
+        print(f"================== summary =====================")
+        for k, v in all_res.items():
+            print(f"{k}: {v}")
+        return
+
     return asyncio.run(
         benchmark(
             backend=backend,
@@ -2069,7 +2132,8 @@ if __name__ == "__main__":
             "generated-shared-prefix",
             "mmmu",
             "random-image",
-            "generate"
+            "generate",
+            'benchmark50'
         ],
         help="Name of the dataset to benchmark on.",
     )
