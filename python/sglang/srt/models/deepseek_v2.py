@@ -1791,7 +1791,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             quant_config=quant_config,
             layer_id=layer_id,
             #NOTE(moran): do all reduce in MLA o_proj when use deepep all reduce, all_reduce can be fused with rmsnorm later
-            reduce_results=get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE", False),
+            reduce_results=get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE", "false"),
             prefix=add_prefix("self_attn", prefix),
             alt_stream=alt_stream,
         )
@@ -1874,7 +1874,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         
         #NOTE(moran): do all reduce in MLA o_proj when use deepep all reduce
         # use layer_communicator when layernorm is fused with all_reduce
-        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE", False):
+        if get_bool_env_var("SGLANG_USE_DEEPEP_ALLREDUCE", "false"):
             hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         else:
             hidden_states, residual = self.layer_communicator.prepare_mlp(
